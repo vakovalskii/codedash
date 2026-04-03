@@ -2,6 +2,10 @@
 
 Termius-style browser dashboard for your Claude Code (and Codex) sessions.
 
+
+https://github.com/user-attachments/assets/15c45659-365b-49f8-86a3-9005fa155ca6
+
+
 ![Dashboard](https://img.shields.io/badge/UI-Dark%20Theme-1a1d23?style=flat-square) ![Node](https://img.shields.io/badge/node-%3E%3D16-green?style=flat-square) ![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)
 
 ## Quick Start
