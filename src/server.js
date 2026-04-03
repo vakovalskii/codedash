@@ -3,7 +3,7 @@ const http = require('http');
 const https = require('https');
 const { URL } = require('url');
 const { exec } = require('child_process');
-const { loadSessions, loadSessionDetail, deleteSession, getGitCommits, exportSessionMarkdown } = require('./data');
+const { loadSessions, loadSessionDetail, deleteSession, getGitCommits, exportSessionMarkdown, getSessionPreview, searchFullText } = require('./data');
 const { detectTerminals, openInTerminal } = require('./terminals');
 const { getHTML } = require('./html');
 
@@ -102,6 +102,23 @@ function startServer(port, openBrowser = true) {
       const to = parseInt(parsed.searchParams.get('to') || Date.now().toString());
       const commits = getGitCommits(project, from, to);
       json(res, commits);
+    }
+
+    // ── Session preview ─────────────────────
+    else if (req.method === 'GET' && pathname.startsWith('/api/preview/')) {
+      const sessionId = pathname.split('/').pop();
+      const project = parsed.searchParams.get('project') || '';
+      const limit = parseInt(parsed.searchParams.get('limit') || '10');
+      const messages = getSessionPreview(sessionId, project, limit);
+      json(res, messages);
+    }
+
+    // ── Full-text search ──────────────────────
+    else if (req.method === 'GET' && pathname === '/api/search') {
+      const q = parsed.searchParams.get('q') || '';
+      const sessions = loadSessions();
+      const results = searchFullText(q, sessions);
+      json(res, results);
     }
 
     // ── Version check ────────────────────────

@@ -330,6 +330,99 @@ function exportSessionMarkdown(sessionId, project) {
   return parts.join('');
 }
 
+// ── Session Preview (first N messages, lightweight) ────────
+
+function getSessionPreview(sessionId, project, limit) {
+  limit = limit || 10;
+  const projectKey = project.replace(/\//g, '-').replace(/^-/, '');
+  const sessionFile = path.join(PROJECTS_DIR, projectKey, `${sessionId}.jsonl`);
+
+  if (!fs.existsSync(sessionFile)) return [];
+
+  const messages = [];
+  const lines = fs.readFileSync(sessionFile, 'utf8').split('\n').filter(Boolean);
+
+  for (const line of lines) {
+    if (messages.length >= limit) break;
+    try {
+      const entry = JSON.parse(line);
+      if (entry.type === 'user' || entry.type === 'assistant') {
+        const msg = entry.message || {};
+        let content = msg.content || '';
+        if (Array.isArray(content)) {
+          content = content
+            .map(b => (typeof b === 'string' ? b : (b.type === 'text' ? b.text : '')))
+            .filter(Boolean)
+            .join('\n');
+        }
+        messages.push({
+          role: entry.type,
+          content: content.slice(0, 300), // short preview
+        });
+      }
+    } catch {}
+  }
+
+  return messages;
+}
+
+// ── Full-text search across all sessions ──────────────────
+
+function searchFullText(query, sessions) {
+  if (!query || query.length < 2) return [];
+  const q = query.toLowerCase();
+  const results = [];
+
+  for (const s of sessions) {
+    if (s.tool !== 'claude' || !s.has_detail) continue;
+
+    const projectKey = s.project.replace(/\//g, '-').replace(/^-/, '');
+    const sessionFile = path.join(PROJECTS_DIR, projectKey, `${s.id}.jsonl`);
+    if (!fs.existsSync(sessionFile)) continue;
+
+    try {
+      const data = fs.readFileSync(sessionFile, 'utf8');
+      // Quick check before parsing
+      if (data.toLowerCase().indexOf(q) === -1) continue;
+
+      // Find matching messages
+      const lines = data.split('\n').filter(Boolean);
+      const matches = [];
+      for (const line of lines) {
+        if (matches.length >= 3) break; // max 3 matches per session
+        try {
+          const entry = JSON.parse(line);
+          if (entry.type !== 'user' && entry.type !== 'assistant') continue;
+          const msg = entry.message || {};
+          let content = msg.content || '';
+          if (Array.isArray(content)) {
+            content = content
+              .map(b => (typeof b === 'string' ? b : (b.type === 'text' ? b.text : '')))
+              .filter(Boolean)
+              .join('\n');
+          }
+          if (content.toLowerCase().indexOf(q) >= 0) {
+            // Extract snippet around match
+            const idx = content.toLowerCase().indexOf(q);
+            const start = Math.max(0, idx - 50);
+            const end = Math.min(content.length, idx + q.length + 50);
+            matches.push({
+              role: entry.type,
+              snippet: (start > 0 ? '...' : '') + content.slice(start, end) + (end < content.length ? '...' : ''),
+            });
+          }
+        } catch {}
+      }
+
+      if (matches.length > 0) {
+        results.push({ sessionId: s.id, matches });
+      }
+    } catch {}
+  }
+
+  return results;
+}
+
 // ── Exports ────────────────────────────────────────────────
 
 module.exports = {
@@ -338,7 +431,8 @@ module.exports = {
   deleteSession,
   getGitCommits,
   exportSessionMarkdown,
-  // Expose constants for consumers that need them
+  getSessionPreview,
+  searchFullText,
   CLAUDE_DIR,
   CODEX_DIR,
   HISTORY_FILE,

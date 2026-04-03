@@ -288,6 +288,12 @@ function applyFilters() {
 function onSearch(val) {
   searchQuery = val;
   applyFilters();
+
+  // Trigger deep search after debounce
+  clearTimeout(deepSearchTimeout);
+  if (val && val.length >= 3) {
+    deepSearchTimeout = setTimeout(function() { deepSearch(val); }, 600);
+  }
 }
 
 function onTagFilter(val) {
@@ -379,12 +385,15 @@ function renderCard(s, idx) {
   html += '<span class="card-meta">' + escHtml(s.last_time || '') + '</span>';
   html += '<span class="card-id">' + s.id.slice(0, 8) + '</span>';
   // Tags
-  if (tagHtml || true) {
-    html += '<span class="card-tags">' + tagHtml;
-    html += '<button class="tag-add-btn" onclick="showTagDropdown(event, \'' + s.id + '\')" title="Add tag">+</button>';
-    html += '</span>';
+  html += '<span class="card-tags">' + tagHtml;
+  html += '<button class="tag-add-btn" onclick="showTagDropdown(event, \'' + s.id + '\')" title="Add tag">+</button>';
+  html += '</span>';
+  if (s.has_detail) {
+    html += '<button class="card-expand-btn" onclick="event.stopPropagation();toggleExpand(\'' + s.id + '\',\'' + escHtml(s.project || '').replace(/'/g, "\\'") + '\',this)" title="Preview messages">&#9662;</button>';
   }
   html += '</div>';
+  // Expandable preview area (hidden by default)
+  html += '<div class="card-preview-area" id="preview-' + s.id + '"></div>';
   html += '</div>';
   return html;
 }
@@ -423,6 +432,177 @@ function renderListCard(s, idx) {
   html += '<button class="star-btn' + (isStarred ? ' active' : '') + '" onclick="event.stopPropagation();toggleStar(\'' + s.id + '\')">&#9733;</button>';
   html += '</div>';
   return html;
+}
+
+// ── Card expand (inline preview) ──────────────────────────────
+
+async function toggleExpand(sessionId, project, btn) {
+  var area = document.getElementById('preview-' + sessionId);
+  if (!area) return;
+
+  if (area.classList.contains('open')) {
+    area.classList.remove('open');
+    area.innerHTML = '';
+    btn.innerHTML = '&#9662;';
+    return;
+  }
+
+  btn.innerHTML = '&#8987;';
+  area.innerHTML = '<div class="loading">Loading...</div>';
+  area.classList.add('open');
+
+  try {
+    var resp = await fetch('/api/preview/' + sessionId + '?project=' + encodeURIComponent(project) + '&limit=10');
+    var messages = await resp.json();
+
+    if (messages.length === 0) {
+      area.innerHTML = '<div class="preview-empty">No messages</div>';
+    } else {
+      var html = '';
+      messages.forEach(function(m) {
+        var cls = m.role === 'user' ? 'preview-user' : 'preview-assistant';
+        var label = m.role === 'user' ? 'You' : 'AI';
+        html += '<div class="preview-msg ' + cls + '">';
+        html += '<span class="preview-role">' + label + '</span> ';
+        html += escHtml(m.content);
+        html += '</div>';
+      });
+      area.innerHTML = html;
+    }
+    btn.innerHTML = '&#9652;';
+  } catch (e) {
+    area.innerHTML = '<div class="preview-empty">Failed to load</div>';
+    btn.innerHTML = '&#9662;';
+  }
+}
+
+// ── Hover tooltip (show first messages on hover) ──────────────
+
+var hoverTimer = null;
+var hoverTooltip = null;
+
+function initHoverPreview() {
+  document.addEventListener('mouseover', function(e) {
+    var card = e.target.closest('.card');
+    if (!card) { hideHoverTooltip(); return; }
+
+    var id = card.getAttribute('data-id');
+    if (!id) return;
+
+    clearTimeout(hoverTimer);
+    hoverTimer = setTimeout(function() {
+      var s = allSessions.find(function(x) { return x.id === id; });
+      if (!s || !s.has_detail) return;
+      showHoverTooltip(card, s);
+    }, 400); // 400ms delay
+  });
+
+  document.addEventListener('mouseout', function(e) {
+    var card = e.target.closest('.card');
+    if (!card) { clearTimeout(hoverTimer); hideHoverTooltip(); }
+  });
+}
+
+async function showHoverTooltip(card, session) {
+  hideHoverTooltip();
+
+  try {
+    var resp = await fetch('/api/preview/' + session.id + '?project=' + encodeURIComponent(session.project || '') + '&limit=6');
+    var messages = await resp.json();
+    if (messages.length === 0) return;
+
+    var tip = document.createElement('div');
+    tip.className = 'hover-tooltip';
+
+    var html = '';
+    messages.forEach(function(m) {
+      var label = m.role === 'user' ? 'You' : 'AI';
+      var cls = m.role === 'user' ? 'preview-user' : 'preview-assistant';
+      html += '<div class="preview-msg ' + cls + '">';
+      html += '<span class="preview-role">' + label + '</span> ';
+      html += escHtml(m.content.slice(0, 150));
+      if (m.content.length > 150) html += '...';
+      html += '</div>';
+    });
+    tip.innerHTML = html;
+
+    document.body.appendChild(tip);
+    hoverTooltip = tip;
+
+    // Position near card
+    var rect = card.getBoundingClientRect();
+    tip.style.top = Math.min(rect.bottom + 4, window.innerHeight - tip.offsetHeight - 8) + 'px';
+    tip.style.left = Math.max(8, rect.left) + 'px';
+    tip.style.maxWidth = Math.min(500, window.innerWidth - rect.left - 20) + 'px';
+
+    requestAnimationFrame(function() { tip.classList.add('visible'); });
+  } catch {}
+}
+
+function hideHoverTooltip() {
+  if (hoverTooltip) {
+    hoverTooltip.remove();
+    hoverTooltip = null;
+  }
+}
+
+// ── Deep search (full-text across session content) ────────────
+
+var deepSearchCache = {};
+var deepSearchTimeout = null;
+
+async function deepSearch(query) {
+  if (!query || query.length < 3) return;
+  if (deepSearchCache[query]) {
+    applyDeepSearchResults(deepSearchCache[query]);
+    return;
+  }
+
+  try {
+    var resp = await fetch('/api/search?q=' + encodeURIComponent(query));
+    var results = await resp.json();
+    deepSearchCache[query] = results;
+    applyDeepSearchResults(results);
+  } catch {}
+}
+
+function applyDeepSearchResults(results) {
+  if (!results || results.length === 0) return;
+
+  // Highlight matching session IDs in filtered list
+  var matchIds = results.map(function(r) { return r.sessionId; });
+
+  // Boost matching sessions to top if not already visible
+  var boosted = [];
+  var rest = [];
+  filteredSessions.forEach(function(s) {
+    if (matchIds.indexOf(s.id) >= 0) {
+      s._deepMatch = results.find(function(r) { return r.sessionId === s.id; });
+      boosted.push(s);
+    } else {
+      rest.push(s);
+    }
+  });
+
+  // Also add sessions that weren't in filteredSessions but match
+  matchIds.forEach(function(id) {
+    if (!boosted.find(function(s) { return s.id === id; }) && !rest.find(function(s) { return s.id === id; })) {
+      var s = allSessions.find(function(x) { return x.id === id; });
+      if (s) {
+        s._deepMatch = results.find(function(r) { return r.sessionId === id; });
+        boosted.push(s);
+      }
+    }
+  });
+
+  filteredSessions = boosted.concat(rest);
+  render();
+
+  // Show deep search indicator
+  var stats = document.getElementById('stats');
+  if (stats && boosted.length > 0) {
+    stats.textContent += ' | ' + boosted.length + ' deep matches';
+  }
 }
 
 function onCardClick(id, event) {
@@ -1196,6 +1376,7 @@ function dismissUpdate() {
   loadSessions();
   loadTerminals();
   checkForUpdates();
+  initHoverPreview();
 
   // Apply saved theme
   var savedTheme = localStorage.getItem('codedash-theme') || 'dark';

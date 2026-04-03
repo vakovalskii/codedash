@@ -1370,6 +1370,104 @@ body {
     color: #fff;
 }
 
+/* ── Card expand preview ────────────────────────────────────── */
+
+.card-expand-btn {
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-muted);
+    font-size: 12px;
+    cursor: pointer;
+    padding: 1px 6px;
+    margin-left: auto;
+    transition: all 0.15s;
+}
+.card-expand-btn:hover {
+    color: var(--text-primary);
+    border-color: var(--accent-blue);
+}
+
+.card-preview-area {
+    display: none;
+    border-top: 1px solid var(--border);
+    margin-top: 10px;
+    padding-top: 10px;
+    max-height: 300px;
+    overflow-y: auto;
+    animation: fadeIn 0.2s ease;
+}
+
+.card-preview-area.open {
+    display: block;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(-4px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+.preview-msg {
+    font-size: 12px;
+    line-height: 1.5;
+    padding: 4px 8px;
+    margin-bottom: 4px;
+    border-radius: 6px;
+    word-break: break-word;
+    white-space: pre-wrap;
+}
+
+.preview-user {
+    background: rgba(96, 165, 250, 0.08);
+}
+
+.preview-assistant {
+    background: rgba(74, 222, 128, 0.06);
+}
+
+.preview-role {
+    font-weight: 600;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+}
+
+.preview-user .preview-role { color: var(--accent-blue); }
+.preview-assistant .preview-role { color: var(--accent-green); }
+
+.preview-empty {
+    color: var(--text-muted);
+    font-size: 12px;
+    padding: 8px 0;
+}
+
+/* ── Hover tooltip ──────────────────────────────────────────── */
+
+.hover-tooltip {
+    position: fixed;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px;
+    z-index: 150;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+    max-height: 280px;
+    overflow-y: auto;
+    opacity: 0;
+    transform: translateY(4px);
+    transition: opacity 0.15s, transform 0.15s;
+    pointer-events: none;
+}
+
+.hover-tooltip.visible {
+    opacity: 1;
+    transform: translateY(0);
+}
+
+[data-theme="light"] .hover-tooltip {
+    box-shadow: 0 8px 32px rgba(0,0,0,0.12);
+}
+
 /* ── Update banner ──────────────────────────────────────────── */
 
 .update-banner {
