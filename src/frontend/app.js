@@ -104,10 +104,20 @@ function showTagDropdown(event, sessionId) {
   document.querySelectorAll('.tag-dropdown').forEach(function(el) { el.remove(); });
   var dd = document.createElement('div');
   dd.className = 'tag-dropdown';
+  var existingTags = tags[sessionId] || [];
   dd.innerHTML = TAG_OPTIONS.map(function(t) {
-    return '<div class="tag-dropdown-item" onclick="event.stopPropagation();addTag(\'' + sessionId + '\',\'' + t + '\')">' + t + '</div>';
+    var has = existingTags.indexOf(t) >= 0;
+    return '<div class="tag-dropdown-item" onclick="event.stopPropagation();' +
+      (has ? 'removeTag' : 'addTag') + '(\'' + sessionId + '\',\'' + t + '\')">' +
+      (has ? '&#10003; ' : '') + t + '</div>';
   }).join('');
-  event.target.parentElement.appendChild(dd);
+
+  // Position near the button
+  var rect = event.target.getBoundingClientRect();
+  dd.style.top = (rect.bottom + 4) + 'px';
+  dd.style.left = rect.left + 'px';
+
+  document.body.appendChild(dd);
   setTimeout(function() {
     document.addEventListener('click', function() { dd.remove(); }, { once: true });
   }, 0);
@@ -1337,6 +1347,30 @@ document.addEventListener('keydown', function(e) {
     return;
   }
 });
+
+// ── Export/Import dialog ──────────────────────────────────────
+
+function showExportDialog() {
+  var overlay = document.getElementById('confirmOverlay');
+  document.getElementById('confirmTitle').textContent = 'Export / Import Sessions';
+  document.getElementById('confirmText').innerHTML =
+    '<strong>Export</strong> all sessions to migrate to another PC:<br>' +
+    '<code style="display:block;margin:8px 0;padding:8px;background:var(--bg-card);border-radius:6px;font-size:12px">codedash export</code>' +
+    'Creates a tar.gz with all Claude &amp; Codex session data.<br><br>' +
+    '<strong>Import</strong> on the new machine:<br>' +
+    '<code style="display:block;margin:8px 0;padding:8px;background:var(--bg-card);border-radius:6px;font-size:12px">codedash import &lt;file.tar.gz&gt;</code>' +
+    '<br><em style="color:var(--text-muted);font-size:12px">Don\'t forget to clone your git repos separately.</em>';
+  document.getElementById('confirmId').textContent = '';
+  document.getElementById('confirmAction').textContent = 'Copy Export Command';
+  document.getElementById('confirmAction').className = 'launch-btn btn-primary';
+  document.getElementById('confirmAction').onclick = function() {
+    navigator.clipboard.writeText('codedash export').then(function() {
+      showToast('Copied: codedash export');
+    });
+    closeConfirm();
+  };
+  if (overlay) overlay.style.display = 'flex';
+}
 
 // ── Update check ──────────────────────────────────────────────
 

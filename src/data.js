@@ -437,58 +437,101 @@ function getSessionPreview(sessionId, project, limit) {
   return messages;
 }
 
-// ── Full-text search across all sessions ──────────────────
+// ── Full-text search index ─────────────────────────────────
+//
+// Built once on first search, then cached in memory.
+// Each entry: { sessionId, texts: [{role, content}] }
+// Total text is kept lowercase for fast substring matching.
 
-function searchFullText(query, sessions) {
-  if (!query || query.length < 2) return [];
-  const q = query.toLowerCase();
-  const results = [];
+let searchIndex = null;
+let searchIndexBuiltAt = 0;
+const INDEX_TTL = 60000; // rebuild every 60s
+
+function buildSearchIndex(sessions) {
+  const startMs = Date.now();
+  const index = [];
 
   for (const s of sessions) {
-    if (s.tool !== 'claude' || !s.has_detail) continue;
+    if (!s.has_detail) continue;
 
-    const projectKey = s.project.replace(/[\/\.]/g, '-');
-    const sessionFile = path.join(PROJECTS_DIR, projectKey, `${s.id}.jsonl`);
-    if (!fs.existsSync(sessionFile)) continue;
+    const found = findSessionFile(s.id, s.project);
+    if (!found) continue;
 
     try {
-      const data = fs.readFileSync(sessionFile, 'utf8');
-      // Quick check before parsing
-      if (data.toLowerCase().indexOf(q) === -1) continue;
+      const lines = fs.readFileSync(found.file, 'utf8').split('\n').filter(Boolean);
+      const texts = [];
 
-      // Find matching messages
-      const lines = data.split('\n').filter(Boolean);
-      const matches = [];
       for (const line of lines) {
-        if (matches.length >= 3) break; // max 3 matches per session
         try {
           const entry = JSON.parse(line);
-          if (entry.type !== 'user' && entry.type !== 'assistant') continue;
-          const msg = entry.message || {};
-          let content = msg.content || '';
-          if (Array.isArray(content)) {
-            content = content
-              .map(b => (typeof b === 'string' ? b : (b.type === 'text' ? b.text : '')))
-              .filter(Boolean)
-              .join('\n');
+          let role, content;
+
+          if (found.format === 'claude') {
+            if (entry.type !== 'user' && entry.type !== 'assistant') continue;
+            role = entry.type;
+            content = extractContent((entry.message || {}).content);
+          } else {
+            if (entry.type !== 'response_item' || !entry.payload) continue;
+            role = entry.payload.role;
+            if (role !== 'user' && role !== 'assistant') continue;
+            content = extractContent(entry.payload.content);
           }
-          if (content.toLowerCase().indexOf(q) >= 0) {
-            // Extract snippet around match
-            const idx = content.toLowerCase().indexOf(q);
-            const start = Math.max(0, idx - 50);
-            const end = Math.min(content.length, idx + q.length + 50);
-            matches.push({
-              role: entry.type,
-              snippet: (start > 0 ? '...' : '') + content.slice(start, end) + (end < content.length ? '...' : ''),
-            });
+
+          if (content && !isSystemMessage(content)) {
+            texts.push({ role, content: content.slice(0, 500) });
           }
         } catch {}
       }
 
-      if (matches.length > 0) {
-        results.push({ sessionId: s.id, matches });
+      if (texts.length > 0) {
+        // Pre-compute lowercase full text for fast matching
+        const fullText = texts.map(t => t.content).join(' ').toLowerCase();
+        index.push({ sessionId: s.id, texts, fullText });
       }
     } catch {}
+  }
+
+  const elapsed = Date.now() - startMs;
+  console.log(`  \x1b[2mSearch index: ${index.length} sessions, ${elapsed}ms\x1b[0m`);
+  return index;
+}
+
+function getSearchIndex(sessions) {
+  const now = Date.now();
+  if (!searchIndex || (now - searchIndexBuiltAt) > INDEX_TTL) {
+    searchIndex = buildSearchIndex(sessions);
+    searchIndexBuiltAt = now;
+  }
+  return searchIndex;
+}
+
+function searchFullText(query, sessions) {
+  if (!query || query.length < 2) return [];
+  const q = query.toLowerCase();
+  const index = getSearchIndex(sessions);
+  const results = [];
+
+  for (const entry of index) {
+    if (entry.fullText.indexOf(q) === -1) continue;
+
+    // Find matching messages with snippets
+    const matches = [];
+    for (const t of entry.texts) {
+      if (matches.length >= 3) break;
+      const idx = t.content.toLowerCase().indexOf(q);
+      if (idx >= 0) {
+        const start = Math.max(0, idx - 50);
+        const end = Math.min(t.content.length, idx + q.length + 50);
+        matches.push({
+          role: t.role,
+          snippet: (start > 0 ? '...' : '') + t.content.slice(start, end) + (end < t.content.length ? '...' : ''),
+        });
+      }
+    }
+
+    if (matches.length > 0) {
+      results.push({ sessionId: entry.sessionId, matches });
+    }
   }
 
   return results;
