@@ -589,6 +589,86 @@ function getSessionReplay(sessionId, project) {
   };
 }
 
+// ── Pricing per model (per token, April 2026) ─────────────
+
+const MODEL_PRICING = {
+  'claude-opus-4-6':   { input: 5.00 / 1e6, output: 25.00 / 1e6, cache_read: 0.50 / 1e6, cache_create: 6.25 / 1e6 },
+  'claude-opus-4-5':   { input: 5.00 / 1e6, output: 25.00 / 1e6, cache_read: 0.50 / 1e6, cache_create: 6.25 / 1e6 },
+  'claude-sonnet-4-6': { input: 3.00 / 1e6, output: 15.00 / 1e6, cache_read: 0.30 / 1e6, cache_create: 3.75 / 1e6 },
+  'claude-sonnet-4-5': { input: 3.00 / 1e6, output: 15.00 / 1e6, cache_read: 0.30 / 1e6, cache_create: 3.75 / 1e6 },
+  'claude-haiku-4-5':  { input: 1.00 / 1e6, output: 5.00 / 1e6,  cache_read: 0.10 / 1e6, cache_create: 1.25 / 1e6 },
+  'codex-mini-latest': { input: 1.50 / 1e6, output: 6.00 / 1e6,  cache_read: 0.375 / 1e6, cache_create: 1.875 / 1e6 },
+  'gpt-5':             { input: 1.25 / 1e6, output: 10.00 / 1e6, cache_read: 0.625 / 1e6, cache_create: 1.25 / 1e6 },
+};
+
+function getModelPricing(model) {
+  if (!model) return MODEL_PRICING['claude-sonnet-4-6']; // default
+  for (const key in MODEL_PRICING) {
+    if (model.includes(key) || model.startsWith(key)) return MODEL_PRICING[key];
+  }
+  // Fallback: try partial match
+  if (model.includes('opus')) return MODEL_PRICING['claude-opus-4-6'];
+  if (model.includes('haiku')) return MODEL_PRICING['claude-haiku-4-5'];
+  if (model.includes('sonnet')) return MODEL_PRICING['claude-sonnet-4-6'];
+  if (model.includes('codex')) return MODEL_PRICING['codex-mini-latest'];
+  return MODEL_PRICING['claude-sonnet-4-6'];
+}
+
+// ── Compute real cost from session file token usage ────────
+
+function computeSessionCost(sessionId, project) {
+  const found = findSessionFile(sessionId, project);
+  if (!found) return { cost: 0, inputTokens: 0, outputTokens: 0, model: '' };
+
+  let totalCost = 0;
+  let totalInput = 0;
+  let totalOutput = 0;
+  let model = '';
+
+  try {
+    const lines = fs.readFileSync(found.file, 'utf8').split('\n').filter(Boolean);
+    for (const line of lines) {
+      try {
+        const entry = JSON.parse(line);
+        if (found.format === 'claude' && entry.type === 'assistant') {
+          const msg = entry.message || {};
+          if (!model && msg.model) model = msg.model;
+          const u = msg.usage;
+          if (!u) continue;
+
+          const pricing = getModelPricing(msg.model || model);
+          const inp = u.input_tokens || 0;
+          const cacheCreate = u.cache_creation_input_tokens || 0;
+          const cacheRead = u.cache_read_input_tokens || 0;
+          const out = u.output_tokens || 0;
+
+          totalInput += inp + cacheCreate + cacheRead;
+          totalOutput += out;
+          totalCost += inp * pricing.input
+                     + cacheCreate * pricing.cache_create
+                     + cacheRead * pricing.cache_read
+                     + out * pricing.output;
+        }
+        // Codex: estimate from file size (no token usage in session files)
+      } catch {}
+    }
+  } catch {}
+
+  // Fallback for Codex or sessions without usage data
+  if (totalCost === 0 && found.format === 'codex') {
+    try {
+      const size = fs.statSync(found.file).size;
+      const tokens = size / 4;
+      const pricing = MODEL_PRICING['codex-mini-latest'];
+      totalInput = Math.round(tokens * 0.3);
+      totalOutput = Math.round(tokens * 0.7);
+      totalCost = totalInput * pricing.input + totalOutput * pricing.output;
+    } catch {}
+  }
+
+  return { cost: totalCost, inputTokens: totalInput, outputTokens: totalOutput, model };
+}
+
 // ── Cost analytics ────────────────────────────────────────
 
 function getCostAnalytics(sessions) {
@@ -600,9 +680,10 @@ function getCostAnalytics(sessions) {
   const sessionCosts = [];
 
   for (const s of sessions) {
-    if (!s.file_size) continue;
-    const tokens = s.file_size / 4;
-    const cost = tokens * 0.000015 * 0.3 + tokens * 0.000075 * 0.7;
+    const costData = computeSessionCost(s.id, s.project);
+    const cost = costData.cost;
+    const tokens = costData.inputTokens + costData.outputTokens;
+    if (cost === 0 && tokens === 0) continue;
     totalCost += cost;
     totalTokens += tokens;
 
@@ -746,6 +827,8 @@ module.exports = {
   getActiveSessions,
   getSessionReplay,
   getCostAnalytics,
+  computeSessionCost,
+  MODEL_PRICING,
   CLAUDE_DIR,
   CODEX_DIR,
   HISTORY_FILE,

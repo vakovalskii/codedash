@@ -91,9 +91,16 @@ function formatBytes(bytes) {
 
 function estimateCost(fileSize) {
   if (!fileSize) return 0;
-  const tokens = fileSize / 4;
-  // Rough estimate: 30% input tokens, 70% output tokens
-  return tokens * 0.000015 * 0.3 + tokens * 0.000075 * 0.7;
+  var tokens = fileSize / 4;
+  // Quick card badge estimate (Sonnet 4.6: $3/M in, $15/M out)
+  return tokens * 0.3 * (3.0 / 1e6) + tokens * 0.7 * (15.0 / 1e6);
+}
+
+async function loadRealCost(sessionId, project) {
+  try {
+    var resp = await fetch('/api/cost/' + sessionId + '?project=' + encodeURIComponent(project));
+    return await resp.json();
+  } catch (e) { return null; }
 }
 
 // ── Tag system ─────────────────────────────────────────────────
@@ -1050,8 +1057,9 @@ async function openDetail(s) {
   infoHtml += '<div class="detail-row"><span class="detail-label">Messages</span><span>' + (s.detail_messages || s.messages || 0) + '</span></div>';
   infoHtml += '<div class="detail-row"><span class="detail-label">File size</span><span>' + formatBytes(s.file_size) + '</span></div>';
   if (costStr) {
-    infoHtml += '<div class="detail-row"><span class="detail-label">Est. cost</span><span class="cost-badge">' + costStr + '</span></div>';
+    infoHtml += '<div class="detail-row"><span class="detail-label">Est. cost</span><span class="cost-badge" id="detail-cost">' + costStr + '</span></div>';
   }
+  infoHtml += '<div class="detail-row" id="detail-real-cost" style="display:none"><span class="detail-label">Real cost</span><span></span></div>';
   // Tags
   infoHtml += '<div class="detail-row"><span class="detail-label">Tags</span><span class="card-tags">';
   sessionTags.forEach(function(t) {
@@ -1109,6 +1117,23 @@ async function openDetail(s) {
   } else {
     body.querySelector('.detail-messages').innerHTML = '<div class="empty-state">No detail file available for this session.</div>';
   }
+
+  // Load real cost
+  loadRealCost(s.id, s.project || '').then(function(costData) {
+    if (!costData || !costData.cost) return;
+    var row = document.getElementById('detail-real-cost');
+    if (row) {
+      row.style.display = '';
+      row.querySelector('span:last-child').innerHTML =
+        '<span class="cost-badge" style="background:rgba(74,222,128,0.2);color:var(--accent-green)">$' + costData.cost.toFixed(2) + '</span>' +
+        ' <span style="font-size:11px;color:var(--text-muted)">' +
+        formatTokens(costData.inputTokens) + ' in / ' + formatTokens(costData.outputTokens) + ' out' +
+        (costData.model ? ' (' + costData.model + ')' : '') + '</span>';
+    }
+    // Update estimated badge to show it was estimated
+    var estBadge = document.getElementById('detail-cost');
+    if (estBadge) estBadge.style.opacity = '0.5';
+  });
 
   // Load git commits
   if (s.project) {
