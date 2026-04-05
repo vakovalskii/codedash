@@ -8,87 +8,109 @@
 </head>
 <body>
 
+<!-- SVG Icon Sprite -->
+<svg xmlns="http://www.w3.org/2000/svg" style="display:none">
+  <symbol id="i-layers" viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></symbol>
+  <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></symbol>
+  <symbol id="i-activity" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><rect x="7" y="7" width="3" height="3"/><rect x="14" y="7" width="3" height="3"/><rect x="7" y="14" width="3" height="3"/><rect x="14" y="14" width="3" height="3"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8"/></symbol>
+  <symbol id="i-bar-chart" viewBox="0 0 24 24"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></symbol>
+  <symbol id="i-star" viewBox="0 0 24 24"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></symbol>
+  <symbol id="i-chat" viewBox="0 0 24 24"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></symbol>
+  <symbol id="i-code" viewBox="0 0 24 24"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></symbol>
+  <symbol id="i-zap" viewBox="0 0 24 24"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></symbol>
+  <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></symbol>
+  <symbol id="i-terminal" viewBox="0 0 24 24"><path d="M4 17l6-6-6-6"/><path d="M12 19h8"/></symbol>
+  <symbol id="i-upload" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></symbol>
+  <symbol id="i-file-text" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></symbol>
+  <symbol id="i-calendar" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></symbol>
+  <symbol id="i-layout-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></symbol>
+  <symbol id="i-layout-list" viewBox="0 0 24 24"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></symbol>
+</svg>
+
 <div class="sidebar">
     <div class="sidebar-brand">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+        <svg class="icon icon-brand"><use href="#i-layers"/></svg>
         codedash
         <span class="version-badge" id="versionBadge"></span>
     </div>
     <div class="sidebar-item active" data-view="sessions">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+        <svg class="icon"><use href="#i-grid"/></svg>
         All Sessions
     </div>
     <div class="sidebar-item" data-view="projects">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>
+        <svg class="icon"><use href="#i-folder"/></svg>
         Projects
     </div>
     <div class="sidebar-item" data-view="timeline">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+        <svg class="icon"><use href="#i-clock"/></svg>
         Timeline
     </div>
     <div class="sidebar-item" data-view="activity">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><rect x="7" y="7" width="3" height="3"/><rect x="14" y="7" width="3" height="3"/><rect x="7" y="14" width="3" height="3"/><rect x="14" y="14" width="3" height="3"/></svg>
+        <svg class="icon"><use href="#i-activity"/></svg>
         Activity
     </div>
     <div class="sidebar-item" data-view="running">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8"/></svg>
+        <svg class="icon"><use href="#i-play"/></svg>
         Running
     </div>
     <div class="sidebar-item" data-view="analytics">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+        <svg class="icon"><use href="#i-bar-chart"/></svg>
         Analytics
     </div>
     <div class="sidebar-item" data-view="starred">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+        <svg class="icon"><use href="#i-star"/></svg>
         Starred
     </div>
     <div class="sidebar-divider"></div>
     <div class="sidebar-section">Agents</div>
     <div class="sidebar-item" data-view="claude-only">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
+        <svg class="icon"><use href="#i-chat"/></svg>
         Claude Code
     </div>
     <div class="sidebar-item" data-view="codex-only">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+        <svg class="icon"><use href="#i-code"/></svg>
         Codex
     </div>
     <div class="sidebar-item" data-view="kiro-only">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+        <svg class="icon"><use href="#i-zap"/></svg>
         Kiro
     </div>
     <div class="sidebar-item" data-view="opencode-only">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+        <svg class="icon"><use href="#i-settings"/></svg>
         OpenCode
     </div>
     <div class="sidebar-divider"></div>
     <div class="sidebar-section">Install Agents</div>
     <div class="sidebar-item" onclick="installAgent('claude')">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 17l6-6-6-6"/><path d="M12 19h8"/></svg>
+        <svg class="icon"><use href="#i-terminal"/></svg>
         Claude Code
     </div>
     <div class="sidebar-item" onclick="installAgent('codex')">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 17l6-6-6-6"/><path d="M12 19h8"/></svg>
+        <svg class="icon"><use href="#i-terminal"/></svg>
         Codex CLI
     </div>
     <div class="sidebar-item" onclick="installAgent('kiro')">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 17l6-6-6-6"/><path d="M12 19h8"/></svg>
+        <svg class="icon"><use href="#i-terminal"/></svg>
         Kiro CLI
     </div>
     <div class="sidebar-item" onclick="installAgent('opencode')">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 17l6-6-6-6"/><path d="M12 19h8"/></svg>
+        <svg class="icon"><use href="#i-terminal"/></svg>
         OpenCode
     </div>
     <div class="sidebar-divider"></div>
     <div class="sidebar-item" onclick="showExportDialog()">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+        <svg class="icon"><use href="#i-upload"/></svg>
         Export / Import
     </div>
     <div class="sidebar-item" data-view="changelog">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+        <svg class="icon"><use href="#i-file-text"/></svg>
         Changelog
     </div>
     <div class="sidebar-item" data-view="settings">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+        <svg class="icon"><use href="#i-settings"/></svg>
         Settings
     </div>
     <div class="sidebar-author">
@@ -109,13 +131,13 @@
             <option value="review">review</option>
         </select>
         <button class="toolbar-btn" id="dateBtn" onclick="toggleCalendar()" title="Date filter">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+            <svg class="icon icon-sm"><use href="#i-calendar"/></svg>
             <span id="dateBtnLabel">All time</span>
         </button>
         <div class="calendar-popup" id="calendarPopup"></div>
         <button class="toolbar-btn" onclick="toggleGroup()" id="groupBtn">Group</button>
         <button class="toolbar-btn" onclick="toggleLayout()" id="layoutBtn" title="Grid / List">
-            <svg id="layoutIcon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+            <svg class="icon icon-sm" id="layoutIcon"><use href="#i-layout-grid"/></svg>
         </button>
         <button class="toolbar-btn" onclick="toggleSelectMode()" id="selectBtn">Select</button>
         <button class="toolbar-btn" onclick="refreshData()">Refresh</button>
@@ -124,40 +146,30 @@
     <div class="content" id="content"></div>
 </div>
 
-<div class="overlay" id="overlay" onclick="closeDetail()"></div>
 <div class="detail-panel" id="detailPanel">
     <div class="detail-header">
-        <strong id="detailTitle">Session Detail</strong>
+        <h3 id="detailTitle"></h3>
         <button class="detail-close" onclick="closeDetail()">&times;</button>
     </div>
     <div class="detail-body" id="detailBody"></div>
 </div>
 
-<div class="confirm-overlay" id="confirmOverlay">
-    <div class="confirm-box">
-        <h3 id="confirmTitle">Delete Session?</h3>
-        <p id="confirmText">This will permanently delete the session file and remove it from history.</p>
-        <div class="confirm-id" id="confirmId"></div>
-        <div class="confirm-btns">
-            <button class="btn-cancel" onclick="closeConfirm()">Cancel</button>
-            <button class="btn-delete" id="confirmAction" onclick="confirmDelete()">Delete</button>
+<div class="overlay" id="overlay" onclick="closeDetail()"></div>
+
+<div class="confirm-overlay" id="confirmOverlay" onclick="closeConfirm()">
+    <div class="confirm-dialog" onclick="event.stopPropagation()">
+        <h3 id="confirmTitle"></h3>
+        <p id="confirmText"></p>
+        <p class="mono" id="confirmId"></p>
+        <div class="confirm-actions">
+            <button class="launch-btn btn-secondary" onclick="closeConfirm()">Cancel</button>
+            <button class="launch-btn" id="confirmAction"></button>
         </div>
     </div>
 </div>
 
-<div class="bulk-bar" id="bulkBar" style="display:none">
-    <span id="bulkCount">0 selected</span>
-    <button class="launch-btn btn-delete" onclick="bulkDelete()">Delete Selected</button>
-    <button class="launch-btn btn-secondary" onclick="clearSelection()">Cancel</button>
-</div>
-
-<div class="toast" id="toast"></div>
-
-<div class="update-banner" id="updateBanner" style="display:none">
-    <span id="updateText"></span>
-    <button class="update-btn" onclick="copyUpdate()">Copy update command</button>
-    <button class="update-dismiss" onclick="dismissUpdate()">&times;</button>
-</div>
+<div id="toast" class="toast"></div>
+<div class="hover-tooltip" id="hoverTooltip"></div>
 
 <script>{{SCRIPT}}</script>
 </body>

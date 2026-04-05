@@ -135,7 +135,18 @@ body {
 }
 .sidebar-item:hover { background: rgba(255,255,255,0.05); color: var(--text-primary); }
 .sidebar-item.active { color: var(--text-primary); background: rgba(255,255,255,0.08); }
-.sidebar-item svg { width: 18px; height: 18px; opacity: 0.7; }
+.icon {
+    width: 18px;
+    height: 18px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+.icon-brand { width: 20px; height: 20px; }
+.icon-sm { width: 14px; height: 14px; }
+.sidebar-item .icon { opacity: 0.7; }
 
 .sidebar-divider { height: 1px; background: var(--border); margin: 12px 20px; }
 

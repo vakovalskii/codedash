@@ -685,9 +685,7 @@ function toggleLayout() {
   if (btn) btn.classList.toggle('active', layout === 'list');
   var icon = document.getElementById('layoutIcon');
   if (icon) {
-    icon.innerHTML = layout === 'list'
-      ? '<line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/>'
-      : '<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/>';
+    icon.innerHTML = '<use href="#i-layout-' + (layout === 'list' ? 'list' : 'grid') + '"/>';
   }
   render();
 }
