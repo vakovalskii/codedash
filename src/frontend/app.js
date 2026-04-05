@@ -1807,9 +1807,11 @@ function renderRunning(container, sessions) {
   var recentInactive = sessions.filter(function(s) { return !activeSessions[s.id]; }).slice(0, 6);
   if (recentInactive.length > 0) {
     html += '<h3 style="margin:24px 0 12px;font-size:14px;color:var(--text-secondary)">Recently Inactive</h3>';
-    html += '<div class="grid-view">';
+    var renderFn = layout === 'list' ? renderListCard : renderCard;
+    var wrapClass = layout === 'list' ? 'list-view' : 'grid-view';
+    html += '<div class="' + wrapClass + '">';
     var idx = 0;
-    recentInactive.forEach(function(s) { html += renderCard(s, idx++); });
+    recentInactive.forEach(function(s) { html += renderFn(s, idx++); });
     html += '</div>';
   }
 
