@@ -466,6 +466,16 @@ function renderCard(s, idx) {
   html += '<div class="card-top">';
   html += '<input type="checkbox" class="card-checkbox" style="' + checkboxStyle + '" ' + (isSelected ? 'checked' : '') + ' onclick="toggleSelect(\'' + s.id + '\', event)">';
   html += '<span class="tool-badge ' + toolClass + '">' + escHtml(s.tool) + '</span>';
+  if (s.mcp_servers && s.mcp_servers.length > 0) {
+    s.mcp_servers.forEach(function(m) {
+      html += '<span class="tool-badge badge-mcp">' + escHtml(m) + '</span>';
+    });
+  }
+  if (s.skills && s.skills.length > 0) {
+    s.skills.forEach(function(sk) {
+      html += '<span class="tool-badge badge-skill">' + escHtml(sk) + '</span>';
+    });
+  }
   html += '<span class="card-project" style="color:' + projColor + '">' + escHtml(projName) + '</span>';
   html += '<span class="card-time">' + timeAgo(s.last_ts) + '</span>';
   if (costStr) {
@@ -522,6 +532,16 @@ function renderListCard(s, idx) {
 
   var html = '<div class="' + classes + '" data-id="' + s.id + '" onclick="onCardClick(\'' + s.id + '\', event)">';
   html += '<span class="tool-badge tool-' + s.tool + '">' + escHtml(s.tool) + '</span>';
+  if (s.mcp_servers && s.mcp_servers.length > 0) {
+    s.mcp_servers.forEach(function(m) {
+      html += '<span class="tool-badge badge-mcp">' + escHtml(m) + '</span>';
+    });
+  }
+  if (s.skills && s.skills.length > 0) {
+    s.skills.forEach(function(sk) {
+      html += '<span class="tool-badge badge-skill">' + escHtml(sk) + '</span>';
+    });
+  }
   html += '<span class="list-project" style="color:' + projColor + '">' + escHtml(projName) + '</span>';
   html += '<span class="list-msg">' + escHtml((s.first_message || '').slice(0, 80)) + '</span>';
   html += '<span class="list-meta">' + s.messages + ' msgs</span>';
