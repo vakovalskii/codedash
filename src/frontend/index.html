@@ -120,7 +120,10 @@
 
 <div class="main">
     <div class="toolbar">
-        <input type="text" class="search-box" placeholder="Search sessions, projects... (press /)" oninput="onSearch(this.value)">
+        <div class="search-wrap">
+            <input type="text" class="search-box" id="searchBox" placeholder="Search sessions, projects... (press /)" oninput="onSearch(this.value)">
+            <button class="search-clear" id="searchClear" onclick="clearSearch()" style="display:none">&times;</button>
+        </div>
         <select id="tagFilter" class="toolbar-btn" onchange="onTagFilter(this.value)">
             <option value="">All Tags</option>
             <option value="bug">bug</option>

@@ -318,7 +318,14 @@ function scanCodexSessions() {
 
 // ── Public API ─────────────────────────────────────────────
 
-function loadSessions() {
+let sessionsCache = null;
+let sessionsCacheAt = 0;
+const SESSIONS_TTL = 30000; // 30 seconds
+
+function loadSessions(forceRefresh) {
+  if (!forceRefresh && sessionsCache && (Date.now() - sessionsCacheAt) < SESSIONS_TTL) {
+    return sessionsCache;
+  }
   const sessions = {};
 
   // Load Claude Code sessions
@@ -444,6 +451,8 @@ function loadSessions() {
     s.date = dt.getFullYear() + '-' + String(dt.getMonth()+1).padStart(2,'0') + '-' + String(dt.getDate()).padStart(2,'0');
   }
 
+  sessionsCache = result;
+  sessionsCacheAt = Date.now();
   return result;
 }
 

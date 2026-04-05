@@ -30,7 +30,8 @@ function startServer(port, openBrowser = true) {
 
     // ── Sessions API ────────────────────────
     else if (req.method === 'GET' && pathname === '/api/sessions') {
-      const sessions = loadSessions();
+      const forceRefresh = params.get('refresh') === '1';
+      const sessions = loadSessions(forceRefresh);
       json(res, sessions);
     }
 

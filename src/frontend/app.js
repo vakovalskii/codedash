@@ -160,9 +160,11 @@ function toggleStar(id) {
 
 // ── Data loading ───────────────────────────────────────────────
 
-async function loadSessions() {
+async function loadSessions(refresh) {
   try {
-    var resp = await fetch('/api/sessions');
+    var url = '/api/sessions';
+    if (refresh) url += '?refresh=1';
+    var resp = await fetch(url);
     allSessions = await resp.json();
     applyFilters();
   } catch (e) {
@@ -171,8 +173,14 @@ async function loadSessions() {
 }
 
 function refreshData() {
-  loadSessions();
+  loadSessions(true);
   showToast('Refreshed');
+}
+
+function clearSearch() {
+  var box = document.getElementById('searchBox');
+  if (box) box.value = '';
+  onSearch('');
 }
 
 async function loadTerminals() {
@@ -378,6 +386,8 @@ function applyFilters() {
 
 function onSearch(val) {
   searchQuery = val;
+  var clearBtn = document.getElementById('searchClear');
+  if (clearBtn) clearBtn.style.display = val ? 'block' : 'none';
   applyFilters();
 
   // Trigger deep search after debounce
