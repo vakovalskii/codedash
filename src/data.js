@@ -8,6 +8,7 @@ const { execSync } = require('child_process');
 const CLAUDE_DIR = path.join(os.homedir(), '.claude');
 const CODEX_DIR = path.join(os.homedir(), '.codex');
 const OPENCODE_DB = path.join(os.homedir(), '.local', 'share', 'opencode', 'opencode.db');
+const KIRO_DB = path.join(os.homedir(), 'Library', 'Application Support', 'kiro-cli', 'data.sqlite3');
 const HISTORY_FILE = path.join(CLAUDE_DIR, 'history.jsonl');
 const PROJECTS_DIR = path.join(CLAUDE_DIR, 'projects');
 
@@ -113,6 +114,83 @@ function loadOpenCodeDetail(sessionId) {
         model: msgData.modelID || msgData.model?.modelID || '',
         tokens: tokens,
       });
+    }
+
+    return { messages: messages.slice(0, 200) };
+  } catch {
+    return { messages: [] };
+  }
+}
+
+function scanKiroSessions() {
+  const sessions = [];
+  if (!fs.existsSync(KIRO_DB)) return sessions;
+
+  try {
+    const rows = execSync(
+      `sqlite3 "${KIRO_DB}" "SELECT key, conversation_id, created_at, updated_at, substr(value, 1, 500) FROM conversations_v2 ORDER BY updated_at DESC"`,
+      { encoding: 'utf8', timeout: 5000 }
+    ).trim();
+
+    if (!rows) return sessions;
+
+    for (const row of rows.split('\n')) {
+      const parts = row.split('|');
+      if (parts.length < 5) continue;
+      const [directory, convId, createdAt, updatedAt, valuePeek] = parts;
+
+      // Extract first user prompt from JSON peek
+      let firstMsg = '';
+      try {
+        // Try to find prompt in the truncated JSON
+        const promptMatch = valuePeek.match(/"prompt":"([^"]{1,100})"/);
+        if (promptMatch) firstMsg = promptMatch[1];
+      } catch {}
+
+      sessions.push({
+        id: convId,
+        tool: 'kiro',
+        project: directory || '',
+        project_short: (directory || '').replace(os.homedir(), '~'),
+        first_ts: parseInt(createdAt) || Date.now(),
+        last_ts: parseInt(updatedAt) || Date.now(),
+        messages: 0,
+        first_message: firstMsg,
+        has_detail: true,
+        file_size: 0,
+        detail_messages: 0,
+      });
+    }
+  } catch {}
+
+  return sessions;
+}
+
+function loadKiroDetail(conversationId) {
+  if (!fs.existsSync(KIRO_DB)) return { messages: [] };
+
+  try {
+    const raw = execSync(
+      `sqlite3 "${KIRO_DB}" "SELECT value FROM conversations_v2 WHERE conversation_id = '${conversationId.replace(/'/g, "''")}';"`,
+      { encoding: 'utf8', timeout: 10000 }
+    ).trim();
+
+    if (!raw) return { messages: [] };
+
+    const data = JSON.parse(raw);
+    const messages = [];
+
+    for (const entry of (data.history || [])) {
+      if (entry.user) {
+        const prompt = (entry.user.content || {}).Prompt || {};
+        const text = prompt.prompt || '';
+        if (text) messages.push({ role: 'user', content: text.slice(0, 2000), uuid: '' });
+      }
+      if (entry.assistant) {
+        const resp = entry.assistant.Response || entry.assistant.response || {};
+        const text = resp.content || '';
+        if (text) messages.push({ role: 'assistant', content: text.slice(0, 2000), uuid: resp.message_id || '' });
+      }
     }
 
     return { messages: messages.slice(0, 200) };
@@ -271,6 +349,14 @@ function loadSessions() {
     }
   } catch {}
 
+  // Load Kiro sessions
+  try {
+    const kiroSessions = scanKiroSessions();
+    for (const ks of kiroSessions) {
+      sessions[ks.id] = ks;
+    }
+  } catch {}
+
   // Enrich Claude sessions with detail file info
   for (const [sid, s] of Object.entries(sessions)) {
     if (s.tool !== 'claude') continue;
@@ -316,6 +402,11 @@ function loadSessionDetail(sessionId, project) {
   // OpenCode uses SQLite
   if (found.format === 'opencode') {
     return loadOpenCodeDetail(sessionId);
+  }
+
+  // Kiro uses SQLite
+  if (found.format === 'kiro') {
+    return loadKiroDetail(sessionId);
   }
 
   const messages = [];
@@ -495,6 +586,19 @@ function findSessionFile(sessionId, project) {
     return { file: OPENCODE_DB, format: 'opencode', sessionId: sessionId };
   }
 
+  // Try Kiro (SQLite)
+  if (fs.existsSync(KIRO_DB)) {
+    try {
+      const check = execSync(
+        `sqlite3 "${KIRO_DB}" "SELECT COUNT(*) FROM conversations_v2 WHERE conversation_id = '${sessionId.replace(/'/g, "''")}';"`,
+        { encoding: 'utf8', timeout: 3000 }
+      ).trim();
+      if (parseInt(check) > 0) {
+        return { file: KIRO_DB, format: 'kiro', sessionId: sessionId };
+      }
+    } catch {}
+  }
+
   return null;
 }
 
@@ -529,6 +633,14 @@ function getSessionPreview(sessionId, project, limit) {
   limit = limit || 10;
   const found = findSessionFile(sessionId, project);
   if (!found) return [];
+
+  // Kiro: use loadKiroDetail and slice
+  if (found.format === 'kiro') {
+    var detail = loadKiroDetail(sessionId);
+    return detail.messages.slice(0, limit).map(function(m) {
+      return { role: m.role, content: m.content.slice(0, 300) };
+    });
+  }
 
   // OpenCode: use loadOpenCodeDetail and slice
   if (found.format === 'opencode') {
@@ -972,6 +1084,7 @@ module.exports = {
   CLAUDE_DIR,
   CODEX_DIR,
   OPENCODE_DB,
+  KIRO_DB,
   HISTORY_FILE,
   PROJECTS_DIR,
 };
