@@ -961,7 +961,9 @@ function render() {
       return;
     }
     var idx = 0;
-    content.innerHTML = starredSessions.map(function(s) { return renderCard(s, idx++); }).join('');
+    var renderFn = layout === 'list' ? renderListCard : renderCard;
+    var wrapClass = layout === 'list' ? 'list-view' : 'grid-view';
+    content.innerHTML = '<div class="' + wrapClass + '">' + starredSessions.map(function(s) { return renderFn(s, idx++); }).join('') + '</div>';
     return;
   }
 
@@ -1075,7 +1077,8 @@ function renderProjects(container, sessions) {
     return;
   }
 
-  var html = '<div class="projects-grid">';
+  var isList = layout === 'list';
+  var html = '<div class="' + (isList ? 'list-view' : 'projects-grid') + '">';
   sorted.forEach(function(entry) {
     var name = entry[0];
     var info = entry[1];
@@ -1084,18 +1087,29 @@ function renderProjects(container, sessions) {
     var totalSize = info.sessions.reduce(function(sum, s) { return sum + (s.file_size || 0); }, 0);
     var latest = info.sessions[0];
 
-    html += '<div class="project-card" onclick="openProject(\'' + escHtml(name).replace(/'/g, "\\'") + '\')">';
-    html += '<div class="project-card-header">';
-    html += '<span class="group-dot" style="background:' + color + '"></span>';
-    html += '<span class="project-card-name">' + escHtml(name) + '</span>';
-    html += '</div>';
-    html += '<div class="project-card-stats">';
-    html += '<span>' + info.sessions.length + ' sessions</span>';
-    html += '<span>' + totalMsgs + ' msgs</span>';
-    html += '<span>' + formatBytes(totalSize) + '</span>';
-    html += '</div>';
-    html += '<div class="project-card-time">Last: ' + timeAgo(latest.last_ts) + '</div>';
-    html += '</div>';
+    if (isList) {
+      html += '<div class="list-row" onclick="openProject(\'' + escHtml(name).replace(/'/g, "\\'") + '\')">';
+      html += '<span class="group-dot" style="background:' + color + '"></span>';
+      html += '<span class="list-project" style="color:' + color + '">' + escHtml(name) + '</span>';
+      html += '<span class="list-meta">' + info.sessions.length + ' sessions</span>';
+      html += '<span class="list-meta">' + totalMsgs + ' msgs</span>';
+      html += '<span class="list-meta">' + formatBytes(totalSize) + '</span>';
+      html += '<span class="list-time">' + timeAgo(latest.last_ts) + '</span>';
+      html += '</div>';
+    } else {
+      html += '<div class="project-card" onclick="openProject(\'' + escHtml(name).replace(/'/g, "\\'") + '\')">';
+      html += '<div class="project-card-header">';
+      html += '<span class="group-dot" style="background:' + color + '"></span>';
+      html += '<span class="project-card-name">' + escHtml(name) + '</span>';
+      html += '</div>';
+      html += '<div class="project-card-stats">';
+      html += '<span>' + info.sessions.length + ' sessions</span>';
+      html += '<span>' + totalMsgs + ' msgs</span>';
+      html += '<span>' + formatBytes(totalSize) + '</span>';
+      html += '</div>';
+      html += '<div class="project-card-time">Last: ' + timeAgo(latest.last_ts) + '</div>';
+      html += '</div>';
+    }
   });
   html += '</div>';
   container.innerHTML = html;
