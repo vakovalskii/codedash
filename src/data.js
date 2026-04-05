@@ -262,6 +262,26 @@ function scanCodexSessions() {
           }
         } catch {}
 
+        // Extract MCP/Skill from Codex session file
+        const mcpSet = new Set();
+        const skillSet = new Set();
+        try {
+          const sLines = fs.readFileSync(f, 'utf8').split('\n').filter(Boolean);
+          for (const sl of sLines) {
+            try {
+              const entry = JSON.parse(sl);
+              if (entry.type === 'response_item' && entry.payload) {
+                const pType = entry.payload.type;
+                const pName = entry.payload.name || '';
+                if (pType === 'function_call' && pName.startsWith('mcp__')) {
+                  const parts = pName.split('__');
+                  if (parts.length >= 3) mcpSet.add(parts[1]);
+                }
+              }
+            } catch {}
+          }
+        } catch {}
+
         const existing = sessions.find(s => s.id === sid);
         if (existing) {
           existing.has_detail = true;
@@ -270,6 +290,8 @@ function scanCodexSessions() {
             existing.project = cwd;
             existing.project_short = cwd.replace(os.homedir(), '~');
           }
+          if (mcpSet.size > 0) existing.mcp_servers = Array.from(mcpSet);
+          if (skillSet.size > 0) existing.skills = Array.from(skillSet);
         } else {
           sessions.push({
             id: sid,
@@ -283,6 +305,8 @@ function scanCodexSessions() {
             has_detail: true,
             file_size: stat.size,
             detail_messages: 0,
+            mcp_servers: Array.from(mcpSet),
+            skills: Array.from(skillSet),
           });
         }
       }
@@ -461,6 +485,7 @@ function loadSessionDetail(sessionId, project) {
         }
       } else {
         if (entry.type === 'response_item' && entry.payload) {
+          const pType = entry.payload.type;
           const role = entry.payload.role;
           if (role === 'user' || role === 'assistant') {
             const content = extractContent(entry.payload.content);
@@ -468,9 +493,34 @@ function loadSessionDetail(sessionId, project) {
               messages.push({ role: role, content: content.slice(0, 2000), uuid: '' });
             }
           }
+          // Collect Codex function_call tools for the last assistant message
+          if (pType === 'function_call') {
+            const pName = entry.payload.name || '';
+            const lastMsg = messages.length > 0 ? messages[messages.length - 1] : null;
+            if (lastMsg && lastMsg.role === 'assistant') {
+              if (!lastMsg.tools) lastMsg.tools = [];
+              if (pName.startsWith('mcp__')) {
+                const parts = pName.split('__');
+                if (parts.length >= 3) {
+                  const key = 'mcp:' + parts[1] + ':' + parts.slice(2).join('__');
+                  if (!lastMsg._toolSeen) lastMsg._toolSeen = new Set();
+                  if (!lastMsg._toolSeen.has(key)) {
+                    lastMsg._toolSeen.add(key);
+                    lastMsg.tools.push({ type: 'mcp', server: parts[1], tool: parts.slice(2).join('__') });
+                  }
+                }
+              }
+            }
+          }
         }
       }
     } catch {}
+  }
+
+  // Clean up internal dedup markers
+  for (const m of messages) {
+    if (m._toolSeen) delete m._toolSeen;
+    if (m.tools && m.tools.length === 0) delete m.tools;
   }
 
   return { messages: messages.slice(0, 200) };
