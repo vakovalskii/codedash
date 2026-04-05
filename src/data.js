@@ -385,7 +385,7 @@ function loadSessions() {
                     if (parts.length >= 3) mcpSet.add(parts[1]);
                   } else if (name === 'Skill') {
                     const skill = (block.input || {}).skill;
-                    if (skill) skillSet.add(skill.includes(':') ? skill.split(':').pop() : skill);
+                    if (skill) skillSet.add(skill.includes(':') ? skill.split(':')[0] : skill);
                   }
                 }
               }
@@ -672,7 +672,7 @@ function extractTools(contentBlocks) {
       const skill = (block.input || {}).skill;
       if (skill && !seen.has('skill:' + skill)) {
         seen.add('skill:' + skill);
-        tools.push({ type: 'skill', skill: skill.includes(':') ? skill.split(':').pop() : skill });
+        tools.push({ type: 'skill', skill: skill.includes(':') ? skill.split(':')[0] : skill });
       }
     }
   }
