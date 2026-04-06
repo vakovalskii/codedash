@@ -120,6 +120,23 @@ function startServer(port, openBrowser = true) {
       json(res, active);
     }
 
+    // ── Open in IDE ────────────────────────
+    else if (req.method === 'POST' && pathname === '/api/open-ide') {
+      readBody(req, body => {
+        try {
+          const { ide, project } = JSON.parse(body);
+          if (ide === 'cursor') {
+            exec(`cursor "${project}"`);
+          } else if (ide === 'code') {
+            exec(`code "${project}"`);
+          }
+          json(res, { ok: true });
+        } catch (e) {
+          json(res, { ok: false, error: e.message }, 400);
+        }
+      });
+    }
+
     // ── Handoff document ───────────────────
     else if (req.method === 'GET' && pathname.startsWith('/api/handoff/')) {
       const sessionId = pathname.split('/').pop();

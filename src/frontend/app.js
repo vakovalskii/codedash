@@ -1139,6 +1139,8 @@ async function openDetail(s) {
   // Show Focus button for active sessions
   if (activeSessions[s.id]) {
     infoHtml += '<button class="launch-btn" style="background:var(--accent-green);color:#000" onclick="focusSession(\'' + s.id + '\')">Focus Terminal</button>';
+  } else if (s.tool === 'cursor') {
+    infoHtml += '<button class="launch-btn" style="background:#4a9eff" onclick="openInCursor(\'' + escHtml(s.project || '') + '\')">Open in Cursor</button>';
   } else {
     infoHtml += '<button class="launch-btn" onclick="launchSession(\'' + s.id + '\',\'' + escHtml(s.tool) + '\',\'' + escHtml(s.project || '') + '\')">Resume</button>';
     if (s.tool === 'claude') {
@@ -1267,9 +1269,15 @@ function launchSession(sessionId, tool, project, flags) {
 }
 
 function copyResume(sessionId, tool) {
-  var cmd = tool === 'codex'
-    ? 'codex resume ' + sessionId
-    : 'claude --resume ' + sessionId;
+  var s = allSessions.find(function(x) { return x.id === sessionId; });
+  var cmd;
+  if (tool === 'codex') {
+    cmd = 'codex resume ' + sessionId;
+  } else if (tool === 'cursor') {
+    cmd = 'cursor ' + (s && s.project ? '"' + s.project + '"' : '.');
+  } else {
+    cmd = 'claude --resume ' + sessionId;
+  }
   navigator.clipboard.writeText(cmd).then(function() {
     showToast('Copied: ' + cmd);
   }).catch(function() {
@@ -1891,6 +1899,20 @@ async function convertTo(sessionId, project, targetFormat) {
   } catch (e) {
     showToast('Convert failed: ' + e.message);
   }
+}
+
+// ── Open in IDE ───────────────────────────────────────────────
+
+function openInCursor(project) {
+  if (!project) { showToast('No project path'); return; }
+  fetch('/api/open-ide', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ide: 'cursor', project: project })
+  }).then(function(r) { return r.json(); }).then(function(data) {
+    if (data.ok) showToast('Opening project in Cursor...');
+    else showToast('Failed: ' + (data.error || 'unknown'));
+  }).catch(function() { showToast('Failed to open Cursor'); });
 }
 
 // ── Handoff ───────────────────────────────────────────────────
