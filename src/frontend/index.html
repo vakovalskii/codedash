@@ -155,26 +155,6 @@
 
 <div class="toast" id="toast"></div>
 
-<div class="confirm-overlay" id="llmSettingsOverlay" style="display:none">
-    <div class="confirm-box" style="max-width:420px">
-        <h3>LLM Settings</h3>
-        <p style="font-size:12px;opacity:0.7;margin-bottom:12px">Configure OpenAI-compatible API for session title generation</p>
-        <div style="display:flex;flex-direction:column;gap:8px">
-            <label style="font-size:12px">API URL</label>
-            <input type="text" id="llmUrl" class="search-box" style="width:100%;box-sizing:border-box" placeholder="http://host:port/v1">
-            <label style="font-size:12px">API Key</label>
-            <input type="password" id="llmApiKey" class="search-box" style="width:100%;box-sizing:border-box" placeholder="sk-...">
-            <label style="font-size:12px">Model</label>
-            <input type="text" id="llmModel" class="search-box" style="width:100%;box-sizing:border-box" placeholder="gpt-4o-mini">
-        </div>
-        <div class="confirm-btns" style="margin-top:16px">
-            <button class="btn-cancel" onclick="closeLLMSettings()">Cancel</button>
-            <button class="launch-btn" onclick="saveLLMSettings()">Save</button>
-            <button class="toolbar-btn" onclick="testLLMConnection()" style="font-size:12px">Test</button>
-        </div>
-    </div>
-</div>
-
 <div class="update-banner" id="updateBanner" style="display:none">
     <span id="updateText"></span>
     <button class="update-btn" onclick="copyUpdate()">Copy update command</button>
