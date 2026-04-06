@@ -188,7 +188,8 @@ function focusTerminalByPid(pid) {
       termLog('FOCUS', `tty=${ttyOut || '(empty)'}`);
       if (!ttyOut) throw new Error('no tty');
 
-      // Walk parent chain to detect cmux (claude → zsh → login → cmux)
+      // Walk parent chain to detect the actual terminal app
+      let detectedTerminal = '';
       try {
         let checkPid = pid;
         for (let depth = 0; depth < 6; depth++) {
@@ -196,53 +197,99 @@ function focusTerminalByPid(pid) {
           if (!ppid || ppid === '0' || ppid === '1') break;
           const parentCmd = execSync(`ps -p ${ppid} -o comm= 2>/dev/null`, { encoding: 'utf8' }).trim();
           termLog('FOCUS', `parent chain: depth=${depth} ppid=${ppid} cmd=${parentCmd}`);
-          if (parentCmd.includes('cmux')) {
-            termLog('FOCUS', 'detected cmux in parent chain, activating');
-            // Activate cmux app and try to select the right workspace
-            execSync(`osascript -e 'tell application "cmux" to activate'`, { stdio: 'pipe', timeout: 2000 });
-            // Try cmux CLI to focus the surface by TTY
-            try {
-              execSync(`cmux trigger-flash --surface ${ttyOut.replace('tty','')} 2>/dev/null`, { stdio: 'pipe', timeout: 2000 });
-            } catch {}
-            return { ok: true, terminal: 'cmux' };
-          }
+          if (parentCmd.includes('cmux')) { detectedTerminal = 'cmux'; break; }
+          if (parentCmd.includes('iTerm')) { detectedTerminal = 'iTerm2'; break; }
+          if (parentCmd.includes('Terminal')) { detectedTerminal = 'Terminal.app'; break; }
+          if (parentCmd.includes('Warp')) { detectedTerminal = 'Warp'; break; }
+          if (parentCmd.includes('kitty')) { detectedTerminal = 'kitty'; break; }
+          if (parentCmd.includes('alacritty')) { detectedTerminal = 'Alacritty'; break; }
           checkPid = ppid;
         }
       } catch {}
 
-      // Try iTerm2 first — activate and select the right tab/window by tty
-      try {
-        const script = `
-          tell application "iTerm"
-            activate
-            repeat with w in windows
-              repeat with t in tabs of w
-                repeat with s in sessions of t
-                  set sessionTTY to tty of s
-                  if sessionTTY contains "${ttyOut}" or "${ttyOut}" contains sessionTTY then
-                    select w
-                    tell w to select t
+      termLog('FOCUS', `detected terminal from parent chain: ${detectedTerminal || '(none)'}`);
+
+      // cmux: activate + flash the surface
+      if (detectedTerminal === 'cmux') {
+        try {
+          execSync(`osascript -e 'tell application "cmux" to activate'`, { stdio: 'pipe', timeout: 2000 });
+          try {
+            execSync(`cmux trigger-flash --surface ${ttyOut.replace('tty','')} 2>/dev/null`, { stdio: 'pipe', timeout: 2000 });
+          } catch {}
+          return { ok: true, terminal: 'cmux' };
+        } catch {}
+      }
+
+      // iTerm2: activate and select the right tab/window by tty
+      if (detectedTerminal === 'iTerm2' || !detectedTerminal) {
+        try {
+          const script = `
+            tell application "iTerm"
+              activate
+              repeat with w in windows
+                repeat with t in tabs of w
+                  repeat with s in sessions of t
+                    set sessionTTY to tty of s
+                    if sessionTTY contains "${ttyOut}" or "${ttyOut}" contains sessionTTY then
+                      select w
+                      tell w to select t
+                      return "found"
+                    end if
+                  end repeat
+                end repeat
+              end repeat
+            end tell
+            return "not found"
+          `;
+          const result = execSync(`osascript -e '${script.replace(/'/g, "'\\''")}'`, { encoding: 'utf8', timeout: 3000 }).trim();
+          if (result === 'found') {
+            return { ok: true, terminal: 'iTerm2' };
+          }
+          // If we specifically detected iTerm2 but couldn't find the tab, still activate it
+          if (detectedTerminal === 'iTerm2') {
+            return { ok: true, terminal: 'iTerm2' };
+          }
+        } catch {}
+      }
+
+      // Terminal.app: activate and select the right window by tty
+      if (detectedTerminal === 'Terminal.app' || !detectedTerminal) {
+        try {
+          const script = `
+            tell application "Terminal"
+              activate
+              repeat with w in windows
+                repeat with t in tabs of w
+                  if tty of t contains "${ttyOut}" or "${ttyOut}" contains tty of t then
+                    set selected tab of w to t
+                    set index of w to 1
                     return "found"
                   end if
                 end repeat
               end repeat
-            end repeat
-          end tell
-          return "not found"
-        `;
-        execSync(`osascript -e '${script.replace(/'/g, "'\\''")}'`, { stdio: 'pipe', timeout: 3000 });
-        return { ok: true, terminal: 'iTerm2' };
-      } catch {}
+            end tell
+            return "not found"
+          `;
+          execSync(`osascript -e '${script.replace(/'/g, "'\\''")}'`, { encoding: 'utf8', timeout: 3000 });
+          return { ok: true, terminal: 'Terminal.app' };
+        } catch {}
+      }
 
-      // Try cmux (fallback if parent chain didn't detect it)
-      try {
-        if (fs.existsSync('/Applications/cmux.app')) {
-          execSync(`osascript -e 'tell application "cmux" to activate'`, { stdio: 'pipe', timeout: 2000 });
-          return { ok: true, terminal: 'cmux' };
-        }
-      } catch {}
+      // Warp
+      if (detectedTerminal === 'Warp') {
+        try {
+          execSync(`osascript -e 'tell application "Warp" to activate'`, { stdio: 'pipe', timeout: 2000 });
+          return { ok: true, terminal: 'Warp' };
+        } catch {}
+      }
 
-      // Fallback: just activate iTerm2 or Terminal.app
+      // Fallback: activate whatever terminal we detected, or try both
+      if (detectedTerminal) {
+        try {
+          execSync(`osascript -e 'tell application "${detectedTerminal}" to activate'`, { stdio: 'pipe' });
+          return { ok: true, terminal: detectedTerminal };
+        } catch {}
+      }
       try {
         execSync(`osascript -e 'tell application "iTerm" to activate'`, { stdio: 'pipe' });
         return { ok: true, terminal: 'iTerm2' };
