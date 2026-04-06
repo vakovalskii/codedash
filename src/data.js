@@ -1342,6 +1342,49 @@ function computeSessionCost(sessionId, project) {
   let contextTurnCount = 0;
   let model = '';
 
+  // OpenCode: query SQLite directly for token data
+  if (found.format === 'opencode') {
+    const safeId = /^[a-zA-Z0-9_-]+$/.test(found.sessionId) ? found.sessionId : '';
+    if (!safeId) return { cost: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreateTokens: 0, contextPctSum: 0, contextTurnCount: 0, model: '' };
+    try {
+      const rows = execSync(
+        `sqlite3 "${OPENCODE_DB}" "SELECT data FROM message WHERE session_id = '${safeId}' AND json_extract(data, '$.role') = 'assistant' ORDER BY time_created"`,
+        { encoding: 'utf8', timeout: 10000 }
+      ).trim();
+      if (rows) {
+        for (const row of rows.split('\n')) {
+          try {
+            const msgData = JSON.parse(row);
+            const t = msgData.tokens || {};
+            if (!model && msgData.modelID) model = msgData.modelID;
+            const inp = t.input || 0;
+            const out = (t.output || 0) + (t.reasoning || 0);
+            const cacheRead = (t.cache && t.cache.read) || 0;
+            const cacheCreate = (t.cache && t.cache.write) || 0;
+            if (inp === 0 && out === 0) continue;
+
+            const pricing = getModelPricing(msgData.modelID || model);
+            totalInput += inp;
+            totalOutput += out;
+            totalCacheRead += cacheRead;
+            totalCacheCreate += cacheCreate;
+            totalCost += inp * pricing.input
+                       + cacheCreate * pricing.cache_create
+                       + cacheRead * pricing.cache_read
+                       + out * pricing.output;
+
+            const contextThisTurn = inp + cacheCreate + cacheRead;
+            if (contextThisTurn > 0) {
+              contextPctSum += (contextThisTurn / CONTEXT_WINDOW) * 100;
+              contextTurnCount++;
+            }
+          } catch {}
+        }
+      }
+    } catch {}
+    return { cost: totalCost, inputTokens: totalInput, outputTokens: totalOutput, cacheReadTokens: totalCacheRead, cacheCreateTokens: totalCacheCreate, contextPctSum, contextTurnCount, model };
+  }
+
   try {
     const lines = readLines(found.file);
     for (const line of lines) {
@@ -1419,8 +1462,50 @@ function getCostAnalytics(sessions) {
   }
   const sessionCosts = [];
 
+  // Pre-compute OpenCode costs in one batch query (avoids O(n) execSync calls)
+  const opencodeCostCache = {};
+  const opencodeSessions = sessions.filter(s => s.tool === 'opencode');
+  if (opencodeSessions.length > 0 && fs.existsSync(OPENCODE_DB)) {
+    try {
+      const batchRows = execSync(
+        `sqlite3 "${OPENCODE_DB}" "SELECT session_id, data FROM message WHERE json_extract(data, '$.role') = 'assistant' ORDER BY time_created"`,
+        { encoding: 'utf8', timeout: 30000 }
+      ).trim();
+      if (batchRows) {
+        for (const row of batchRows.split('\n')) {
+          const sepIdx = row.indexOf('|');
+          if (sepIdx < 0) continue;
+          const sessId = row.slice(0, sepIdx);
+          const jsonStr = row.slice(sepIdx + 1);
+          try {
+            const msgData = JSON.parse(jsonStr);
+            const t = msgData.tokens || {};
+            const inp = t.input || 0;
+            const out = (t.output || 0) + (t.reasoning || 0);
+            const cacheRead = (t.cache && t.cache.read) || 0;
+            const cacheCreate = (t.cache && t.cache.write) || 0;
+            if (inp === 0 && out === 0) continue;
+            if (!opencodeCostCache[sessId]) opencodeCostCache[sessId] = { cost: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreateTokens: 0, contextPctSum: 0, contextTurnCount: 0, model: '' };
+            const c = opencodeCostCache[sessId];
+            if (!c.model && msgData.modelID) c.model = msgData.modelID;
+            const pricing = getModelPricing(msgData.modelID || c.model);
+            c.inputTokens += inp;
+            c.outputTokens += out;
+            c.cacheReadTokens += cacheRead;
+            c.cacheCreateTokens += cacheCreate;
+            c.cost += inp * pricing.input + cacheCreate * pricing.cache_create + cacheRead * pricing.cache_read + out * pricing.output;
+            const ctx = inp + cacheCreate + cacheRead;
+            if (ctx > 0) { c.contextPctSum += (ctx / CONTEXT_WINDOW) * 100; c.contextTurnCount++; }
+          } catch {}
+        }
+      }
+    } catch {}
+  }
+
   for (const s of sessions) {
-    const costData = computeSessionCost(s.id, s.project);
+    const costData = (s.tool === 'opencode' && opencodeCostCache[s.id])
+      ? opencodeCostCache[s.id]
+      : computeSessionCost(s.id, s.project);
     const cost = costData.cost;
     const tokens = costData.inputTokens + costData.outputTokens + costData.cacheReadTokens + costData.cacheCreateTokens;
     if (cost === 0 && tokens === 0) {
@@ -1443,6 +1528,7 @@ function getCostAnalytics(sessions) {
     byAgent[agent].sessions++;
     byAgent[agent].tokens += tokens;
     if (agent === 'codex') byAgent[agent].estimated = true;
+    if (agent === 'opencode' && !costData.model) byAgent[agent].estimated = true;
 
     // Context % across all turns
     globalContextPctSum += costData.contextPctSum;
