@@ -1208,80 +1208,101 @@ function getCostAnalytics(sessions) {
 
 function getActiveSessions() {
   const active = [];
-  const sessionsDir = path.join(CLAUDE_DIR, 'sessions');
+  const seenPids = new Set();
 
-  // Read ~/.claude/sessions/<PID>.json files
+  // 1. Claude Code — read PID files for session ID mapping
+  const sessionsDir = path.join(CLAUDE_DIR, 'sessions');
+  const claudePidMap = {}; // pid → {sessionId, cwd, startedAt}
   if (fs.existsSync(sessionsDir)) {
     for (const file of fs.readdirSync(sessionsDir)) {
       if (!file.endsWith('.json')) continue;
       try {
         const data = JSON.parse(fs.readFileSync(path.join(sessionsDir, file), 'utf8'));
-        const pid = data.pid;
-        if (!pid) continue;
-
-        // Check if process is alive + get CPU
-        try {
-          const psOut = execSync(`ps -p ${pid} -o pid=,%cpu=,rss=,stat= 2>/dev/null`, { encoding: 'utf8', timeout: 2000 }).trim();
-          if (!psOut) continue;
-
-          const parts = psOut.trim().split(/\s+/);
-          const cpu = parseFloat(parts[1]) || 0;
-          const rss = parseInt(parts[2]) || 0; // KB
-          const stat = parts[3] || '';
-
-          // Determine status
-          let status = 'active';
-          if (cpu < 1 && (stat.includes('S') || stat.includes('T'))) {
-            status = 'waiting'; // idle/sleeping — likely waiting for user input
-          }
-
-          active.push({
-            pid: pid,
-            sessionId: data.sessionId,
-            cwd: data.cwd || '',
-            startedAt: data.startedAt || 0,
-            kind: data.kind || 'interactive',
-            entrypoint: data.entrypoint || '',
-            status: status,
-            cpu: cpu,
-            memoryMB: Math.round(rss / 1024),
-          });
-        } catch {
-          // Process not found — stale file, skip
-        }
+        if (data.pid) claudePidMap[data.pid] = data;
       } catch {}
     }
   }
 
-  // Also check Codex processes
+  // 2. Scan ALL agent processes via ps
+  const agentPatterns = [
+    { pattern: 'claude', tool: 'claude', match: /\bclaude\b/ },
+    { pattern: 'codex', tool: 'codex', match: /\bcodex\b/ },
+    { pattern: 'opencode', tool: 'opencode', match: /\bopencode\b/ },
+    { pattern: 'kiro', tool: 'kiro', match: /kiro-cli/ },
+    { pattern: 'cursor-agent', tool: 'cursor', match: /cursor-agent/ },
+  ];
+
   try {
-    const codexPs = execSync('ps aux 2>/dev/null | grep "[c]odex" || true', { encoding: 'utf8', timeout: 2000 });
-    for (const line of codexPs.split('\n').filter(Boolean)) {
+    const psOut = execSync(
+      'ps aux 2>/dev/null | grep -E "claude|codex|opencode|kiro-cli|cursor-agent" | grep -v grep || true',
+      { encoding: 'utf8', timeout: 3000 }
+    );
+
+    for (const line of psOut.split('\n').filter(Boolean)) {
       const parts = line.trim().split(/\s+/);
       if (parts.length < 11) continue;
+
       const pid = parseInt(parts[1]);
+      if (seenPids.has(pid)) continue;
+
       const cpu = parseFloat(parts[2]) || 0;
       const rss = parseInt(parts[5]) || 0;
+      const stat = parts[7] || '';
+      const cmd = parts.slice(10).join(' ');
 
-      // Skip if already found via claude sessions
-      if (active.find(a => a.pid === pid)) continue;
+      // Determine tool
+      let tool = '';
+      for (const ap of agentPatterns) {
+        if (ap.match.test(cmd)) { tool = ap.tool; break; }
+      }
+      if (!tool) continue;
 
-      // Try to get cwd
+      // Skip node/npm/shell wrappers — only main processes
+      if (cmd.includes('node bin/cli') || cmd.includes('npm') || cmd.includes('grep')) continue;
+
+      seenPids.add(pid);
+
+      // Get session ID from Claude PID files
+      let sessionId = '';
       let cwd = '';
-      try {
-        const lsofOut = execSync(`lsof -d cwd -p ${pid} -Fn 2>/dev/null`, { encoding: 'utf8', timeout: 2000 });
-        const match = lsofOut.match(/\nn(\/[^\n]+)/);
-        if (match) cwd = match[1];
-      } catch {}
+      let startedAt = 0;
+      if (claudePidMap[pid]) {
+        sessionId = claudePidMap[pid].sessionId || '';
+        cwd = claudePidMap[pid].cwd || '';
+        startedAt = claudePidMap[pid].startedAt || 0;
+      }
+
+      // Try to get cwd from lsof if not from PID file
+      if (!cwd) {
+        try {
+          const lsofOut = execSync(`lsof -d cwd -p ${pid} -Fn 2>/dev/null`, { encoding: 'utf8', timeout: 2000 });
+          const match = lsofOut.match(/\nn(\/[^\n]+)/);
+          if (match) cwd = match[1];
+        } catch {}
+      }
+
+      // Try to find session ID by matching cwd + tool to loaded sessions
+      if (!sessionId) {
+        const allS = loadSessions();
+        const match = allS.find(s => s.tool === tool && s.project === cwd);
+        if (match) sessionId = match.id;
+        // If still no match, find latest session of this tool
+        if (!sessionId) {
+          const latest = allS.filter(s => s.tool === tool).sort((a,b) => b.last_ts - a.last_ts)[0];
+          if (latest) sessionId = latest.id;
+        }
+      }
+
+      const status = cpu < 1 && (stat.includes('S') || stat.includes('T')) ? 'waiting' : 'active';
 
       active.push({
         pid: pid,
-        sessionId: '',
+        sessionId: sessionId,
         cwd: cwd,
-        startedAt: 0,
-        kind: 'codex',
-        entrypoint: 'codex',
-        status: cpu < 1 ? 'waiting' : 'active',
+        startedAt: startedAt,
+        kind: tool,
+        entrypoint: tool,
+        status: status,
         cpu: cpu,
         memoryMB: Math.round(rss / 1024),
       });
