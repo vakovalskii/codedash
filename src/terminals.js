@@ -3,6 +3,13 @@
 const fs = require('fs');
 const { execSync, exec } = require('child_process');
 
+// Run cmux CLI command via osascript — needed because codedash runs as a detached server
+// and cmux rejects direct socket connections from processes not inside a cmux terminal
+function cmuxExec(args) {
+  const escaped = args.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  return execSync(`osascript -e 'do shell script "cmux ${escaped}"'`, { encoding: 'utf8', timeout: 5000 }).trim();
+}
+
 // ── Detect available terminals ──────────────────────────────
 
 function detectTerminals() {
@@ -116,10 +123,23 @@ function openInTerminal(sessionId, tool, flags, projectDir, terminalId) {
       case 'alacritty':
         exec(`alacritty -e bash -c '${fullCmd}; exec bash'`);
         break;
-      case 'cmux':
-        // cmux — just activate it, user manages sessions inside
-        execSync(`osascript -e 'tell application "cmux" to activate'`);
+      case 'cmux': {
+        // cmux — open new workspace with resume command, then switch to it
+        try {
+          const cwdArg = projectDir ? ` --cwd ${JSON.stringify(projectDir)}` : '';
+          const cmdArg = ` --command ${JSON.stringify(cmd)}`;
+          const out = cmuxExec(`new-workspace${cwdArg}${cmdArg}`);
+          const wsMatch = out.match(/workspace:\d+/);
+          if (wsMatch) {
+            cmuxExec(`select-workspace --workspace ${wsMatch[0]}`);
+          }
+          execSync(`osascript -e 'tell application "cmux" to activate'`, { stdio: 'pipe', timeout: 2000 });
+        } catch {
+          // Fallback: just activate cmux
+          execSync(`osascript -e 'tell application "cmux" to activate'`);
+        }
         break;
+      }
       case 'iterm2':
       default: {
         const script = `
@@ -174,6 +194,26 @@ function openInTerminal(sessionId, tool, flags, projectDir, terminalId) {
   }
 }
 
+// ── Focus cmux workspace by PID → env var ───────────────────
+
+function focusCmuxWorkspace(pid) {
+  if (pid) {
+    try {
+      const psEnv = execSync(`ps eww -p ${pid} 2>/dev/null`, { encoding: 'utf8', timeout: 2000 });
+      const wsMatch = psEnv.match(/CMUX_WORKSPACE_ID=([0-9A-F-]{36})/i);
+      if (wsMatch) {
+        cmuxExec(`select-workspace --workspace ${wsMatch[1]}`);
+        execSync(`osascript -e 'tell application "cmux" to activate'`, { stdio: 'pipe', timeout: 2000 });
+        return { ok: true, terminal: 'cmux' };
+      }
+    } catch {}
+  }
+
+  // Fallback: just activate cmux
+  execSync(`osascript -e 'tell application "cmux" to activate'`, { stdio: 'pipe', timeout: 2000 });
+  return { ok: true, terminal: 'cmux' };
+}
+
 // ── Focus existing terminal by PID ──────────────────────────
 
 function focusTerminalByPid(pid) {
@@ -209,15 +249,9 @@ function focusTerminalByPid(pid) {
 
       termLog('FOCUS', `detected terminal from parent chain: ${detectedTerminal || '(none)'}`);
 
-      // cmux: activate + flash the surface
+      // cmux: select workspace by PID's CMUX_WORKSPACE_ID env var
       if (detectedTerminal === 'cmux') {
-        try {
-          execSync(`osascript -e 'tell application "cmux" to activate'`, { stdio: 'pipe', timeout: 2000 });
-          try {
-            execSync(`cmux trigger-flash --surface ${ttyOut.replace('tty','')} 2>/dev/null`, { stdio: 'pipe', timeout: 2000 });
-          } catch {}
-          return { ok: true, terminal: 'cmux' };
-        } catch {}
+        return focusCmuxWorkspace(pid);
       }
 
       // iTerm2: activate and select the right tab/window by tty
@@ -280,6 +314,15 @@ function focusTerminalByPid(pid) {
         try {
           execSync(`osascript -e 'tell application "Warp" to activate'`, { stdio: 'pipe', timeout: 2000 });
           return { ok: true, terminal: 'Warp' };
+        } catch {}
+      }
+
+      // cmux fallback (if parent chain didn't detect it)
+      if (!detectedTerminal) {
+        try {
+          if (fs.existsSync('/Applications/cmux.app')) {
+            return focusCmuxWorkspace(pid);
+          }
         } catch {}
       }
 
