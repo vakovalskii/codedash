@@ -1985,13 +1985,6 @@ function renderSettings(container) {
   html += '</div>';
   html += '</div>';
 
-  // Version
-  html += '<div style="margin-top:32px;padding-top:16px;border-top:1px solid var(--border)">';
-  var badge = document.getElementById('versionBadge');
-  var ver = badge ? badge.textContent : '';
-  html += '<span style="color:var(--text-muted);font-size:12px">codedash ' + escHtml(ver) + '</span>';
-  html += '</div>';
-
   html += '</div>';
   container.innerHTML = html;
 
