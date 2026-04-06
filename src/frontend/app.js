@@ -100,6 +100,34 @@ function estimateCost(fileSize) {
   return tokens * 0.3 * (3.0 / 1e6) + tokens * 0.7 * (15.0 / 1e6);
 }
 
+// ── Subscription config helpers ──────────────────────────────────
+function getSubscriptionConfig() {
+  var raw = JSON.parse(localStorage.getItem('codedash-subscription') || 'null');
+  if (!raw) return { entries: [] };
+  // Migrate old single-entry format {plan, paid} → new multi-period {entries: [...]}
+  if (!raw.entries) return { entries: [{ plan: raw.plan || 'Subscription', paid: raw.paid || 0, from: '' }] };
+  return raw;
+}
+function saveSubscriptionConfig(cfg) { localStorage.setItem('codedash-subscription', JSON.stringify(cfg)); }
+function subTotalPaid(entries) { return entries.reduce(function(s,e){return s+(parseFloat(e.paid)||0);},0); }
+function addSubEntry() {
+  var plan = (document.getElementById('sub-new-plan').value || '').trim();
+  var paid = parseFloat(document.getElementById('sub-new-paid').value) || 0;
+  var from = (document.getElementById('sub-new-from').value || '').trim();
+  if (!paid) return;
+  var cfg = getSubscriptionConfig();
+  cfg.entries.push({ plan: plan || 'Subscription', paid: paid, from: from });
+  cfg.entries.sort(function(a,b){return (a.from||'').localeCompare(b.from||'');});
+  saveSubscriptionConfig(cfg);
+  render();
+}
+function removeSubEntry(idx) {
+  var cfg = getSubscriptionConfig();
+  cfg.entries.splice(idx, 1);
+  saveSubscriptionConfig(cfg);
+  render();
+}
+
 async function loadRealCost(sessionId, project) {
   try {
     var resp = await fetch('/api/cost/' + sessionId + '?project=' + encodeURIComponent(project));
@@ -1880,6 +1908,56 @@ async function renderAnalytics(container) {
       html += '</div>';
       html += '</div>';
     }
+
+    // ── Subscription vs API ────────────────────────────────────
+    var sub = getSubscriptionConfig();
+    var subEntries = (sub && sub.entries) || [];
+    var totalPaid = subTotalPaid(subEntries);
+    html += '<div class="chart-section subscription-section">';
+    html += '<h3>Subscription vs API</h3>';
+
+    if (totalPaid > 0) {
+      var savings = data.totalCost - totalPaid;
+      var multiplier = data.totalCost / totalPaid;
+      var savingsPositive = savings > 0;
+      var breakdown = subEntries.map(function(e) {
+        return escHtml(e.plan || 'Sub') + ' $' + parseFloat(e.paid).toFixed(0);
+      }).join(' + ');
+      html += '<div class="sub-comparison">';
+      html += '<div class="sub-card sub-paid"><span class="sub-val">$' + totalPaid.toFixed(2) + '</span><span class="sub-label">Paid (' + breakdown + ')</span></div>';
+      html += '<div class="sub-card sub-api"><span class="sub-val">$' + data.totalCost.toFixed(2) + '</span><span class="sub-label">Would cost at API rates</span></div>';
+      html += '<div class="sub-card ' + (savingsPositive ? 'sub-savings' : 'sub-loss') + '"><span class="sub-val">' + (savingsPositive ? '+' : '') + '$' + Math.abs(savings).toFixed(2) + '</span><span class="sub-label">' + (savingsPositive ? 'Saved (' + multiplier.toFixed(1) + '\u00d7 ROI)' : 'API would be cheaper') + '</span></div>';
+      html += '</div>';
+      var barPct = Math.min(100, data.totalCost > 0 ? (totalPaid / data.totalCost * 100) : 100);
+      html += '<div class="sub-bar-track" title="$' + totalPaid.toFixed(2) + ' paid of $' + data.totalCost.toFixed(2) + ' API equivalent">';
+      html += '<div class="sub-bar-fill" style="width:' + barPct + '%"></div>';
+      html += '</div>';
+    } else {
+      html += '<p class="sub-hint">Add your subscription periods below to see how much you\'re saving vs API rates.</p>';
+    }
+
+    // Period list
+    html += '<div class="sub-entries">';
+    if (subEntries.length > 0) {
+      subEntries.forEach(function(e, i) {
+        html += '<div class="sub-entry-row">';
+        html += '<span class="sub-entry-plan">' + escHtml(e.plan || '\u2014') + '</span>';
+        html += '<span class="sub-entry-paid">$' + parseFloat(e.paid || 0).toFixed(2) + '</span>';
+        html += '<span class="sub-entry-from">' + (e.from ? 'from ' + e.from : 'no date') + '</span>';
+        html += '<button class="sub-entry-remove" onclick="removeSubEntry(' + i + ')" title="Remove">\u00d7</button>';
+        html += '</div>';
+      });
+    }
+    html += '</div>';
+
+    // Add form
+    html += '<div class="sub-add-form">';
+    html += '<input id="sub-new-plan" type="text" placeholder="Plan (Pro, Max\u2026)" />';
+    html += '<input id="sub-new-paid" type="number" min="0" step="0.01" placeholder="Amount ($)" />';
+    html += '<input id="sub-new-from" type="date" title="Start date of this billing period" />';
+    html += '<button onclick="addSubEntry()">+ Add period</button>';
+    html += '</div>';
+    html += '</div>';
 
     // ── Daily cost chart ───────────────────────────────────────
     var dayKeys = Object.keys(data.byDay).sort();

@@ -2116,6 +2116,112 @@ body {
 .token-cache-create { border-color: rgba(251, 191, 36, 0.3); }
 .token-context { border-color: rgba(168, 85, 247, 0.3); }
 
+/* ── Subscription vs API ──────────────────────────────────── */
+
+.subscription-section { margin-top: 8px; }
+
+.sub-comparison {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 10px;
+    margin-bottom: 12px;
+}
+
+.sub-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px;
+    text-align: center;
+}
+
+.sub-val { font-size: 20px; font-weight: 700; display: block; }
+.sub-label { font-size: 11px; color: var(--text-muted); display: block; margin-top: 4px; }
+
+.sub-paid .sub-val { color: var(--text); }
+.sub-api .sub-val { color: var(--accent-blue, #60a5fa); }
+.sub-savings .sub-val { color: var(--accent-green); }
+.sub-loss .sub-val { color: var(--accent-red, #f87171); }
+
+.sub-bar-track {
+    height: 8px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    margin-bottom: 14px;
+    overflow: hidden;
+}
+
+.sub-bar-fill {
+    height: 100%;
+    background: var(--accent-green);
+    border-radius: 4px;
+    transition: width 0.3s;
+}
+
+.sub-hint {
+    color: var(--text-muted);
+    font-size: 13px;
+    margin: 8px 0;
+}
+
+.sub-entries { margin-bottom: 10px; }
+
+.sub-entry-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 6px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+}
+
+.sub-entry-plan { font-weight: 600; min-width: 80px; }
+.sub-entry-paid { color: var(--accent-green); min-width: 70px; }
+.sub-entry-from { color: var(--text-muted); flex: 1; }
+.sub-entry-remove {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 16px;
+    padding: 2px 6px;
+    border-radius: 4px;
+}
+.sub-entry-remove:hover { background: rgba(248, 113, 113, 0.15); color: var(--accent-red, #f87171); }
+
+.sub-add-form {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+.sub-add-form input {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 10px;
+    color: var(--text);
+    font-size: 13px;
+}
+
+.sub-add-form input[type="text"] { width: 130px; }
+.sub-add-form input[type="number"] { width: 100px; }
+.sub-add-form input[type="date"] { width: 140px; }
+
+.sub-add-form button {
+    background: var(--accent-blue, #60a5fa);
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    padding: 6px 14px;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 600;
+}
+.sub-add-form button:hover { opacity: 0.85; }
+
 /* ── Update banner ──────────────────────────────────────────── */
 
 .update-banner {
