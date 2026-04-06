@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { execSync } = require('child_process');
+const { execSync, execFileSync } = require('child_process');
 
 // ── Constants ──────────────────────────────────────────────
 
@@ -23,10 +23,10 @@ function scanOpenCodeSessions() {
 
   try {
     // Use sqlite3 CLI to avoid Node version dependency
-    const rows = execSync(
-      `sqlite3 "${OPENCODE_DB}" "SELECT s.id, s.title, s.directory, s.time_created, s.time_updated, COUNT(m.id) as msg_count FROM session s LEFT JOIN message m ON m.session_id = s.id GROUP BY s.id ORDER BY s.time_updated DESC"`,
-      { encoding: 'utf8', timeout: 5000 }
-    ).trim();
+    const rows = execFileSync('sqlite3', [
+      OPENCODE_DB,
+      'SELECT s.id, s.title, s.directory, s.time_created, s.time_updated, COUNT(m.id) as msg_count FROM session s LEFT JOIN message m ON m.session_id = s.id GROUP BY s.id ORDER BY s.time_updated DESC'
+    ], { encoding: 'utf8', timeout: 5000, windowsHide: true }).trim();
 
     if (!rows) return sessions;
 
@@ -59,10 +59,10 @@ function loadOpenCodeDetail(sessionId) {
 
   try {
     // Get messages with parts joined
-    const rows = execSync(
-      `sqlite3 "${OPENCODE_DB}" "SELECT m.data, GROUP_CONCAT(p.data, '|||') FROM message m LEFT JOIN part p ON p.message_id = m.id WHERE m.session_id = '${sessionId.replace(/'/g, "''")}' GROUP BY m.id ORDER BY m.time_created"`,
-      { encoding: 'utf8', timeout: 10000 }
-    ).trim();
+    const rows = execFileSync('sqlite3', [
+      OPENCODE_DB,
+      `SELECT m.data, GROUP_CONCAT(p.data, '|||') FROM message m LEFT JOIN part p ON p.message_id = m.id WHERE m.session_id = '${sessionId.replace(/'/g, "''")}' GROUP BY m.id ORDER BY m.time_created`
+    ], { encoding: 'utf8', timeout: 10000, windowsHide: true }).trim();
 
     if (!rows) return { messages: [] };
 
@@ -130,10 +130,10 @@ function scanKiroSessions() {
   if (!fs.existsSync(KIRO_DB)) return sessions;
 
   try {
-    const rows = execSync(
-      `sqlite3 "${KIRO_DB}" "SELECT key, conversation_id, created_at, updated_at, substr(value, 1, 500) FROM conversations_v2 ORDER BY updated_at DESC"`,
-      { encoding: 'utf8', timeout: 5000 }
-    ).trim();
+    const rows = execFileSync('sqlite3', [
+      KIRO_DB,
+      'SELECT key, conversation_id, created_at, updated_at, substr(value, 1, 500) FROM conversations_v2 ORDER BY updated_at DESC'
+    ], { encoding: 'utf8', timeout: 5000, windowsHide: true }).trim();
 
     if (!rows) return sessions;
 
@@ -173,10 +173,10 @@ function loadKiroDetail(conversationId) {
   if (!fs.existsSync(KIRO_DB)) return { messages: [] };
 
   try {
-    const raw = execSync(
-      `sqlite3 "${KIRO_DB}" "SELECT value FROM conversations_v2 WHERE conversation_id = '${conversationId.replace(/'/g, "''")}';"`,
-      { encoding: 'utf8', timeout: 10000 }
-    ).trim();
+    const raw = execFileSync('sqlite3', [
+      KIRO_DB,
+      `SELECT value FROM conversations_v2 WHERE conversation_id = '${conversationId.replace(/'/g, "''")}';`
+    ], { encoding: 'utf8', timeout: 10000, windowsHide: true }).trim();
 
     if (!raw) return { messages: [] };
 
@@ -689,10 +689,9 @@ function getGitCommits(projectDir, fromTs, toTs) {
     const afterDate = new Date(fromTs).toISOString();
     const beforeDate = new Date(toTs).toISOString();
 
-    const output = execSync(
-      `git log --oneline --after="${afterDate}" --before="${beforeDate}"`,
-      { cwd: projectDir, encoding: 'utf8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'] }
-    ).trim();
+    const output = execFileSync('git', [
+      'log', '--oneline', `--after=${afterDate}`, `--before=${beforeDate}`
+    ], { cwd: projectDir, encoding: 'utf8', timeout: 5000, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] }).trim();
 
     if (!output) return [];
 
@@ -808,10 +807,10 @@ function findSessionFile(sessionId, project) {
   // Try Kiro (SQLite)
   if (fs.existsSync(KIRO_DB)) {
     try {
-      const check = execSync(
-        `sqlite3 "${KIRO_DB}" "SELECT COUNT(*) FROM conversations_v2 WHERE conversation_id = '${sessionId.replace(/'/g, "''")}';"`,
-        { encoding: 'utf8', timeout: 3000 }
-      ).trim();
+      const check = execFileSync('sqlite3', [
+        KIRO_DB,
+        `SELECT COUNT(*) FROM conversations_v2 WHERE conversation_id = '${sessionId.replace(/'/g, "''")}';`
+      ], { encoding: 'utf8', timeout: 3000, windowsHide: true }).trim();
       if (parseInt(check) > 0) {
         return { file: KIRO_DB, format: 'kiro', sessionId: sessionId };
       }
@@ -1223,7 +1222,7 @@ function getActiveSessions() {
     }
   }
 
-  // 2. Scan ALL agent processes via ps
+  // 2. Scan ALL agent processes via ps (Unix) or wmic (Windows)
   const agentPatterns = [
     { pattern: 'claude', tool: 'claude', match: /\bclaude\b/ },
     { pattern: 'codex', tool: 'codex', match: /\bcodex\b/ },
@@ -1233,79 +1232,133 @@ function getActiveSessions() {
   ];
 
   try {
-    const psOut = execSync(
-      'ps aux 2>/dev/null | grep -E "claude|codex|opencode|kiro-cli|cursor-agent" | grep -v grep || true',
-      { encoding: 'utf8', timeout: 3000 }
-    );
+    const isWin = process.platform === 'win32';
 
-    for (const line of psOut.split('\n').filter(Boolean)) {
-      const parts = line.trim().split(/\s+/);
-      if (parts.length < 11) continue;
+    if (isWin) {
+      // Windows: use wmic to list processes without spawning a visible CMD window
+      const wmicOut = execFileSync('wmic', [
+        'process', 'get', 'ProcessId,CommandLine,WorkingSetSize', '/format:csv'
+      ], { encoding: 'utf8', timeout: 5000, windowsHide: true });
 
-      const pid = parseInt(parts[1]);
-      if (seenPids.has(pid)) continue;
+      for (const line of wmicOut.split('\n').filter(Boolean)) {
+        const cols = line.trim().split(',');
+        // CSV format: Node,CommandLine,ProcessId,WorkingSetSize
+        if (cols.length < 4) continue;
+        const cmd = cols.slice(1, cols.length - 2).join(',');
+        const pid = parseInt(cols[cols.length - 2]);
+        const wss = parseInt(cols[cols.length - 1]) || 0;
+        if (!pid || isNaN(pid)) continue;
+        if (seenPids.has(pid)) continue;
 
-      const cpu = parseFloat(parts[2]) || 0;
-      const rss = parseInt(parts[5]) || 0;
-      const stat = parts[7] || '';
-      const cmd = parts.slice(10).join(' ');
-
-      // Determine tool
-      let tool = '';
-      for (const ap of agentPatterns) {
-        if (ap.match.test(cmd)) { tool = ap.tool; break; }
-      }
-      if (!tool) continue;
-
-      // Skip node/npm/shell wrappers — only main processes
-      if (cmd.includes('node bin/cli') || cmd.includes('npm') || cmd.includes('grep')) continue;
-
-      seenPids.add(pid);
-
-      // Get session ID from Claude PID files
-      let sessionId = '';
-      let cwd = '';
-      let startedAt = 0;
-      if (claudePidMap[pid]) {
-        sessionId = claudePidMap[pid].sessionId || '';
-        cwd = claudePidMap[pid].cwd || '';
-        startedAt = claudePidMap[pid].startedAt || 0;
-      }
-
-      // Try to get cwd from lsof if not from PID file
-      if (!cwd) {
-        try {
-          const lsofOut = execSync(`lsof -d cwd -p ${pid} -Fn 2>/dev/null`, { encoding: 'utf8', timeout: 2000 });
-          const match = lsofOut.match(/\nn(\/[^\n]+)/);
-          if (match) cwd = match[1];
-        } catch {}
-      }
-
-      // Try to find session ID by matching cwd + tool to loaded sessions
-      if (!sessionId) {
-        const allS = loadSessions();
-        const match = allS.find(s => s.tool === tool && s.project === cwd);
-        if (match) sessionId = match.id;
-        // If still no match, find latest session of this tool
-        if (!sessionId) {
-          const latest = allS.filter(s => s.tool === tool).sort((a,b) => b.last_ts - a.last_ts)[0];
-          if (latest) sessionId = latest.id;
+        let tool = '';
+        for (const ap of agentPatterns) {
+          if (ap.match.test(cmd)) { tool = ap.tool; break; }
         }
+        if (!tool) continue;
+        if (cmd.includes('node bin/cli') || cmd.includes('npm') || cmd.includes('grep') || cmd.includes('wmic')) continue;
+
+        seenPids.add(pid);
+
+        let sessionId = '';
+        let cwd = '';
+        let startedAt = 0;
+        if (claudePidMap[pid]) {
+          sessionId = claudePidMap[pid].sessionId || '';
+          cwd = claudePidMap[pid].cwd || '';
+          startedAt = claudePidMap[pid].startedAt || 0;
+        }
+
+        if (!sessionId) {
+          const allS = loadSessions();
+          const match = allS.find(s => s.tool === tool && s.project === cwd);
+          if (match) sessionId = match.id;
+          if (!sessionId) {
+            const latest = allS.filter(s => s.tool === tool).sort((a,b) => b.last_ts - a.last_ts)[0];
+            if (latest) sessionId = latest.id;
+          }
+        }
+
+        active.push({
+          pid: pid,
+          sessionId: sessionId,
+          cwd: cwd,
+          startedAt: startedAt,
+          kind: tool,
+          entrypoint: tool,
+          status: 'active',
+          cpu: 0,
+          memoryMB: Math.round(wss / (1024 * 1024)),
+        });
       }
+    } else {
+      // Unix: ps aux
+      const psOut = execSync(
+        'ps aux 2>/dev/null | grep -E "claude|codex|opencode|kiro-cli|cursor-agent" | grep -v grep || true',
+        { encoding: 'utf8', timeout: 3000 }
+      );
 
-      const status = cpu < 1 && (stat.includes('S') || stat.includes('T')) ? 'waiting' : 'active';
+      for (const line of psOut.split('\n').filter(Boolean)) {
+        const parts = line.trim().split(/\s+/);
+        if (parts.length < 11) continue;
 
-      active.push({
-        pid: pid,
-        sessionId: sessionId,
-        cwd: cwd,
-        startedAt: startedAt,
-        kind: tool,
-        entrypoint: tool,
-        status: status,
-        cpu: cpu,
-        memoryMB: Math.round(rss / 1024),
-      });
+        const pid = parseInt(parts[1]);
+        if (seenPids.has(pid)) continue;
+
+        const cpu = parseFloat(parts[2]) || 0;
+        const rss = parseInt(parts[5]) || 0;
+        const stat = parts[7] || '';
+        const cmd = parts.slice(10).join(' ');
+
+        let tool = '';
+        for (const ap of agentPatterns) {
+          if (ap.match.test(cmd)) { tool = ap.tool; break; }
+        }
+        if (!tool) continue;
+        if (cmd.includes('node bin/cli') || cmd.includes('npm') || cmd.includes('grep')) continue;
+
+        seenPids.add(pid);
+
+        let sessionId = '';
+        let cwd = '';
+        let startedAt = 0;
+        if (claudePidMap[pid]) {
+          sessionId = claudePidMap[pid].sessionId || '';
+          cwd = claudePidMap[pid].cwd || '';
+          startedAt = claudePidMap[pid].startedAt || 0;
+        }
+
+        if (!cwd) {
+          try {
+            const lsofOut = execSync(`lsof -d cwd -p ${pid} -Fn 2>/dev/null`, { encoding: 'utf8', timeout: 2000 });
+            const match = lsofOut.match(/\nn(\/[^\n]+)/);
+            if (match) cwd = match[1];
+          } catch {}
+        }
+
+        if (!sessionId) {
+          const allS = loadSessions();
+          const match = allS.find(s => s.tool === tool && s.project === cwd);
+          if (match) sessionId = match.id;
+          if (!sessionId) {
+            const latest = allS.filter(s => s.tool === tool).sort((a,b) => b.last_ts - a.last_ts)[0];
+            if (latest) sessionId = latest.id;
+          }
+        }
+
+        const status = cpu < 1 && (stat.includes('S') || stat.includes('T')) ? 'waiting' : 'active';
+
+        active.push({
+          pid: pid,
+          sessionId: sessionId,
+          cwd: cwd,
+          startedAt: startedAt,
+          kind: tool,
+          entrypoint: tool,
+          status: status,
+          cpu: cpu,
+          memoryMB: Math.round(rss / 1024),
+        });
+      }
     }
   } catch {}
 
