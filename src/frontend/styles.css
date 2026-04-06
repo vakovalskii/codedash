@@ -1172,6 +1172,41 @@ body {
     color: #4a9eff;
 }
 
+/* ── MCP / Skill badges ──────────────────────────────────────── */
+
+.badge-mcp {
+    background: rgba(251, 146, 60, 0.15);
+    color: var(--accent-orange);
+}
+
+.badge-skill {
+    background: rgba(139, 92, 246, 0.15);
+    color: var(--accent-purple);
+}
+
+.card-tools {
+    padding: 8px 16px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.message.has-tools {
+    padding: 0;
+    overflow: hidden;
+}
+.message.has-tools .msg-inner {
+    padding: 10px 14px;
+}
+.msg-tools {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 6px 14px;
+    border-top: 1px solid var(--border);
+}
+
 /* ── Groups ─────────────────────────────────────────────────── */
 
 .group {

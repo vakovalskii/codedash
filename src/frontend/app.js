@@ -885,6 +885,21 @@ function renderCard(s, idx) {
     html += '<button class="card-expand-btn" onclick="event.stopPropagation();toggleExpand(\'' + s.id + '\',\'' + escHtml(s.project || '').replace(/'/g, "\\'") + '\',this)" title="Preview messages">&#9662;</button>';
   }
   html += '</div>';
+  // MCP/Skills footer
+  if ((s.mcp_servers && s.mcp_servers.length > 0) || (s.skills && s.skills.length > 0)) {
+    html += '<div class="card-tools">';
+    if (s.mcp_servers) {
+      s.mcp_servers.forEach(function(m) {
+        html += '<span class="tool-badge badge-mcp">' + escHtml(m) + '</span>';
+      });
+    }
+    if (s.skills) {
+      s.skills.forEach(function(sk) {
+        html += '<span class="tool-badge badge-skill">' + escHtml(sk) + '</span>';
+      });
+    }
+    html += '</div>';
+  }
   // Expandable preview area (hidden by default)
   html += '<div class="card-preview-area" id="preview-' + s.id + '"></div>';
   html += '</div>';
@@ -919,6 +934,16 @@ function renderListCard(s, idx) {
   var html = '<div class="' + classes + '" data-id="' + s.id + '" onclick="onCardClick(\'' + s.id + '\', event)">';
   var listToolLabel = s.tool === 'claude-ext' ? 'claude ext' : s.tool;
   html += '<span class="tool-badge tool-' + s.tool + '">' + escHtml(listToolLabel) + '</span>';
+  if (s.mcp_servers && s.mcp_servers.length > 0) {
+    s.mcp_servers.forEach(function(m) {
+      html += '<span class="tool-badge badge-mcp">' + escHtml(m) + '</span>';
+    });
+  }
+  if (s.skills && s.skills.length > 0) {
+    s.skills.forEach(function(sk) {
+      html += '<span class="tool-badge badge-skill">' + escHtml(sk) + '</span>';
+    });
+  }
   html += '<span class="list-project" style="color:' + projColor + '">' + escHtml(projName) + '</span>';
   html += '<span class="list-msg">' + escHtml((s.first_message || '').slice(0, 80)) + '</span>';
   html += '<span class="list-meta">' + s.messages + ' msgs</span>';
@@ -1505,6 +1530,22 @@ async function openDetail(s) {
   });
   infoHtml += '<button class="tag-add-btn" onclick="showTagDropdown(event, \'' + s.id + '\')">+</button>';
   infoHtml += '</span></div>';
+  // MCP servers row
+  if (s.mcp_servers && s.mcp_servers.length > 0) {
+    infoHtml += '<div class="detail-row"><span class="detail-label">MCP</span><span style="display:flex;gap:4px;flex-wrap:wrap">';
+    s.mcp_servers.forEach(function(m) {
+      infoHtml += '<span class="tool-badge badge-mcp">' + escHtml(m) + '</span>';
+    });
+    infoHtml += '</span></div>';
+  }
+  // Skills row
+  if (s.skills && s.skills.length > 0) {
+    infoHtml += '<div class="detail-row"><span class="detail-label">Skills</span><span style="display:flex;gap:4px;flex-wrap:wrap">';
+    s.skills.forEach(function(sk) {
+      infoHtml += '<span class="tool-badge badge-skill">' + escHtml(sk) + '</span>';
+    });
+    infoHtml += '</span></div>';
+  }
   infoHtml += '</div>';
 
   // Action buttons
@@ -1548,9 +1589,23 @@ async function openDetail(s) {
         data.messages.forEach(function(m) {
           var roleClass = m.role === 'user' ? 'msg-user' : 'msg-assistant';
           var roleLabel = m.role === 'user' ? 'You' : 'Assistant';
-          msgsHtml += '<div class="message ' + roleClass + '">';
+          var hasTools = m.tools && m.tools.length > 0;
+          msgsHtml += '<div class="message ' + roleClass + (hasTools ? ' has-tools' : '') + '">';
+          msgsHtml += '<div class="msg-inner">';
           msgsHtml += '<div class="msg-role">' + roleLabel + '</div>';
           msgsHtml += '<div class="msg-content">' + escHtml(m.content) + '</div>';
+          msgsHtml += '</div>';
+          if (hasTools) {
+            msgsHtml += '<div class="msg-tools">';
+            m.tools.forEach(function(t) {
+              if (t.type === 'mcp') {
+                msgsHtml += '<span class="tool-badge badge-mcp">' + escHtml(t.tool) + '</span>';
+              } else if (t.type === 'skill') {
+                msgsHtml += '<span class="tool-badge badge-skill">' + escHtml(t.skill) + '</span>';
+              }
+            });
+            msgsHtml += '</div>';
+          }
           msgsHtml += '</div>';
         });
         msgContainer.innerHTML = msgsHtml;

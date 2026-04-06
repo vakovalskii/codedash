@@ -91,6 +91,8 @@ function parseClaudeSessionFile(sessionFile) {
   let lastTs = stat.mtimeMs;
   let entrypointFound = false;
   let worktreeOriginalCwd = '';
+  const mcpSet = new Set();
+  const skillSet = new Set();
 
   for (const line of lines) {
     try {
@@ -120,6 +122,23 @@ function parseClaudeSessionFile(sessionFile) {
         const content = extractContent(entry.message.content).trim();
         if (content) firstMsg = content.slice(0, 200);
       }
+      // MCP/Skill extraction from assistant tool_use blocks
+      if (entry.type === 'assistant') {
+        const aContent = (entry.message || {}).content;
+        if (Array.isArray(aContent)) {
+          for (const block of aContent) {
+            if (!block || block.type !== 'tool_use') continue;
+            const name = block.name || '';
+            if (name.startsWith('mcp__')) {
+              const parts = name.split('__');
+              if (parts.length >= 3) mcpSet.add(parts[1]);
+            } else if (name === 'Skill') {
+              const sk = (block.input || {}).skill;
+              if (sk) skillSet.add(sk.includes(':') ? sk.split(':')[0] : sk);
+            }
+          }
+        }
+      }
     } catch {}
   }
 
@@ -133,6 +152,8 @@ function parseClaudeSessionFile(sessionFile) {
     lastTs,
     fileSize: stat.size,
     worktreeOriginalCwd,
+    mcpServers: Array.from(mcpSet),
+    skills: Array.from(skillSet),
   };
 }
 
@@ -144,6 +165,8 @@ function mergeClaudeSessionDetail(session, summary, sessionFile) {
   session.file_size = summary.fileSize;
   session.detail_messages = summary.msgCount;
   session._session_file = sessionFile;
+  session.mcp_servers = summary.mcpServers || [];
+  session.skills = summary.skills || [];
 
   if (!session.project && summary.projectPath) {
     session.project = summary.projectPath;
@@ -646,6 +669,7 @@ function parseCodexSessionFile(sessionFile) {
   let firstMsg = '';
   let firstTs = stat.mtimeMs;
   let lastTs = stat.mtimeMs;
+  const mcpSet = new Set();
 
   for (const line of lines) {
     try {
@@ -662,6 +686,17 @@ function parseCodexSessionFile(sessionFile) {
       }
 
       if (entry.type !== 'response_item' || !entry.payload) continue;
+
+      // MCP function_call extraction
+      if (entry.payload.type === 'function_call') {
+        const name = entry.payload.name || '';
+        if (name.startsWith('mcp__')) {
+          const parts = name.split('__');
+          if (parts.length >= 3) mcpSet.add(parts[1]);
+        }
+        continue;
+      }
+
       const role = entry.payload.role;
       if (role !== 'user' && role !== 'assistant') continue;
 
@@ -680,6 +715,7 @@ function parseCodexSessionFile(sessionFile) {
     firstTs,
     lastTs,
     fileSize: stat.size,
+    mcpServers: Array.from(mcpSet),
   };
 }
 
@@ -756,6 +792,9 @@ function scanCodexSessions() {
           }
           existing.first_ts = Math.min(existing.first_ts, summary.firstTs);
           existing.last_ts = Math.max(existing.last_ts, summary.lastTs);
+          if (summary.mcpServers && summary.mcpServers.length > 0) {
+            existing.mcp_servers = summary.mcpServers;
+          }
         } else {
           sessions.push({
             id: sid,
@@ -769,6 +808,8 @@ function scanCodexSessions() {
             has_detail: true,
             file_size: summary.fileSize,
             detail_messages: summary.msgCount,
+            mcp_servers: summary.mcpServers || [],
+            skills: [],
           });
         }
       }
@@ -1028,6 +1069,8 @@ function loadSessions() {
       s.has_detail = false;
       s.file_size = 0;
       s.detail_messages = 0;
+      s.mcp_servers = [];
+      s.skills = [];
     }
   }
 
@@ -1060,6 +1103,8 @@ function loadSessions() {
             has_detail: true,
             file_size: summary.fileSize,
             detail_messages: summary.msgCount,
+            mcp_servers: summary.mcpServers,
+            skills: summary.skills,
             _claude_dir: CLAUDE_DIR,
             _session_file: filePath,
             worktree_original_cwd: summary.worktreeOriginalCwd || '',
@@ -1067,6 +1112,12 @@ function loadSessions() {
         }
       }
     } catch {}
+  }
+
+  // Ensure all sessions have mcp_servers/skills (defaults for non-Claude)
+  for (const s of Object.values(sessions)) {
+    if (!s.mcp_servers) s.mcp_servers = [];
+    if (!s.skills) s.skills = [];
   }
 
   const result = Object.values(sessions).sort((a, b) => b.last_ts - a.last_ts);
@@ -1119,11 +1170,21 @@ function loadSessionDetail(sessionId, project) {
         if (entry.type === 'user' || entry.type === 'assistant') {
           const content = extractContent((entry.message || {}).content);
           if (content) {
-            messages.push({ role: entry.type, content: content.slice(0, 2000), uuid: entry.uuid || '' });
+            const msg = { role: entry.type, content: content.slice(0, 2000), uuid: entry.uuid || '' };
+            if (entry.type === 'assistant') {
+              const rawContent = (entry.message || {}).content;
+              if (Array.isArray(rawContent)) {
+                const tools = extractTools(rawContent);
+                if (tools.length > 0) msg.tools = tools;
+              }
+            }
+            messages.push(msg);
           }
         }
       } else {
+        // Codex format: response_item with payload
         if (entry.type === 'response_item' && entry.payload) {
+          const pType = entry.payload.type;
           const role = entry.payload.role;
           if (role === 'user' || role === 'assistant') {
             const content = extractContent(entry.payload.content);
@@ -1131,9 +1192,34 @@ function loadSessionDetail(sessionId, project) {
               messages.push({ role: role, content: content.slice(0, 2000), uuid: '' });
             }
           }
+          // Codex function_call → attach as tool to last assistant message
+          if (pType === 'function_call') {
+            const name = entry.payload.name || '';
+            if (name.startsWith('mcp__')) {
+              const parts = name.split('__');
+              if (parts.length >= 3) {
+                const lastMsg = messages.length > 0 ? messages[messages.length - 1] : null;
+                if (lastMsg && lastMsg.role === 'assistant') {
+                  if (!lastMsg.tools) lastMsg.tools = [];
+                  if (!lastMsg._toolSeen) lastMsg._toolSeen = new Set();
+                  const tool = parts.slice(2).join('__');
+                  const key = 'mcp:' + parts[1] + ':' + tool;
+                  if (!lastMsg._toolSeen.has(key)) {
+                    lastMsg._toolSeen.add(key);
+                    lastMsg.tools.push({ type: 'mcp', server: parts[1], tool: tool });
+                  }
+                }
+              }
+            }
+          }
         }
       }
     } catch {}
+  }
+
+  // Clean up internal markers from Codex
+  for (const m of messages) {
+    if (m._toolSeen) delete m._toolSeen;
   }
 
   return { messages: messages.slice(0, 200) };
@@ -1360,6 +1446,41 @@ function extractContent(raw) {
       .join('\n');
   }
   return String(raw);
+}
+
+// Extract MCP/Skill tool_use blocks from a Claude assistant message content array.
+// Returns deduplicated array of { type, server, tool } or { type, skill }.
+function extractTools(contentBlocks) {
+  if (!Array.isArray(contentBlocks)) return [];
+  const tools = [];
+  const seen = new Set();
+  for (const block of contentBlocks) {
+    if (!block || block.type !== 'tool_use') continue;
+    const name = block.name || '';
+    if (name.startsWith('mcp__')) {
+      const parts = name.split('__');
+      if (parts.length >= 3) {
+        const tool = parts.slice(2).join('__');
+        const key = 'mcp:' + parts[1] + ':' + tool;
+        if (!seen.has(key)) {
+          seen.add(key);
+          tools.push({ type: 'mcp', server: parts[1], tool: tool });
+        }
+      }
+    } else if (name === 'Skill') {
+      const skillRaw = (block.input || {}).skill;
+      if (skillRaw) {
+        // Use plugin name only (e.g. "superpowers:writing-plans" -> "superpowers")
+        const skill = skillRaw.includes(':') ? skillRaw.split(':')[0] : skillRaw;
+        const key = 'skill:' + skill;
+        if (!seen.has(key)) {
+          seen.add(key);
+          tools.push({ type: 'skill', skill: skill });
+        }
+      }
+    }
+  }
+  return tools;
 }
 
 function getSessionPreview(sessionId, project, limit) {
