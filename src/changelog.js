@@ -2,6 +2,19 @@
 
 const CHANGELOG = [
   {
+    version: '6.0.4',
+    date: '2026-04-06',
+    title: '5 agents: Cursor + live detection for all',
+    changes: [
+      'Cursor support: read sessions from ~/.cursor/projects/*/agent-transcripts/',
+      'LIVE/WAITING detection for ALL agents (Claude, Codex, Cursor, OpenCode, Kiro)',
+      'Open in Cursor button (opens project in Cursor IDE)',
+      'Detects Claude Code extension running inside Cursor (claude-vscode entrypoint)',
+      'GitHub-style SVG activity heatmap with streak stats and tool breakdown',
+      'Smart Cursor project path decoding from filesystem',
+    ],
+  },
+  {
     version: '5.3.0',
     date: '2026-04-06',
     title: 'Kiro CLI support',
