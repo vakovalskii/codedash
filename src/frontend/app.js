@@ -60,25 +60,34 @@ function normalizeGroupingMode(mode) {
   return mode === 'repo' ? 'repo' : 'folder';
 }
 
-// Returns the git repo name from session data.
-// Prefers s.git_root resolved by the backend (git rev-parse --show-toplevel),
-// falls back to path-based heuristic for sessions without it.
-function getGitProjectName(fullPath, gitRoot) {
-  if (gitRoot) return gitRoot.replace(/\/+$/, '').split('/').pop() || 'unknown';
-  if (!fullPath) return 'unknown';
-  var cleaned = fullPath.replace(/\/+$/, '');
-  var wt = cleaned.match(/^(.*?)\/.claude\/worktrees\//);
-  if (wt) return wt[1].split('/').pop() || 'unknown';
-  var codex = cleaned.match(/^(.*?)\/.codex\//);
-  if (codex) return codex[1].split('/').pop() || 'unknown';
-  return cleaned.split('/').pop() || 'unknown';
+function getRepoInfo(fullPath, gitRoot) {
+  var repoRoot = '';
+  if (gitRoot) {
+    repoRoot = gitRoot.replace(/\/+$/, '');
+  } else if (fullPath) {
+    var cleaned = fullPath.replace(/\/+$/, '');
+    var wt = cleaned.match(/^(.*?)\/.claude\/worktrees\//);
+    var codex = cleaned.match(/^(.*?)\/.codex\//);
+    repoRoot = wt ? wt[1] : (codex ? codex[1] : cleaned);
+  }
+
+  var name = repoRoot ? repoRoot.split('/').pop() : 'unknown';
+  return {
+    key: repoRoot || 'unknown',
+    name: name || 'unknown'
+  };
 }
 
-function getSessionGroupName(session) {
+function getGitProjectName(fullPath, gitRoot) {
+  return getRepoInfo(fullPath, gitRoot).name;
+}
+
+function getSessionGroupInfo(session) {
   if (groupingMode === 'repo') {
-    return getGitProjectName(session.project, session.git_root);
+    return getRepoInfo(session.project, session.git_root);
   }
-  return getProjectName(session.project);
+  var name = getProjectName(session.project);
+  return { key: name, name: name };
 }
 
 // ── Utilities ──────────────────────────────────────────────────
@@ -1154,29 +1163,30 @@ function renderGrouped(container, sessions, renderFn) {
   renderFn = renderFn || renderCard;
   var groups = {};
   sessions.forEach(function(s) {
-    var key = getSessionGroupName(s);
-    if (!groups[key]) groups[key] = [];
-    groups[key].push(s);
+    var group = getSessionGroupInfo(s);
+    if (!groups[group.key]) groups[group.key] = { name: group.name, sessions: [] };
+    groups[group.key].sessions.push(s);
   });
 
   var sortedKeys = Object.keys(groups).sort(function(a, b) {
-    return groups[b][0].last_ts - groups[a][0].last_ts;
+    return groups[b].sessions[0].last_ts - groups[a].sessions[0].last_ts;
   });
 
   var globalIdx = 0;
   var html = '';
   sortedKeys.forEach(function(key) {
+    var group = groups[key];
     var color = getProjectColor(key);
     html += '<div class="group">';
     html += '<div class="group-header" onclick="this.parentElement.classList.toggle(\'collapsed\')">';
     html += '<span class="group-dot" style="background:' + color + '"></span>';
-    html += '<span class="group-name">' + escHtml(key) + '</span>';
-    html += '<span class="group-count">' + groups[key].length + '</span>';
+    html += '<span class="group-name">' + escHtml(group.name) + '</span>';
+    html += '<span class="group-count">' + group.sessions.length + '</span>';
     html += '<span class="group-chevron">&#9660;</span>';
     html += '</div>';
     var bodyClass = layout === 'list' ? 'group-body group-body-list' : 'group-body';
     html += '<div class="' + bodyClass + '">';
-    groups[key].forEach(function(s) {
+    group.sessions.forEach(function(s) {
       html += renderFn(s, globalIdx++);
     });
     html += '</div></div>';
