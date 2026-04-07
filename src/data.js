@@ -123,6 +123,24 @@ function parseClaudeSessionFile(sessionFile) {
   };
 }
 
+function parseCodexSessionIndex(codexDir) {
+  const titles = {};
+  const indexFile = path.join(codexDir, 'session_index.jsonl');
+  if (!fs.existsSync(indexFile)) return titles;
+
+  for (const line of readLines(indexFile)) {
+    try {
+      const entry = JSON.parse(line);
+      const sid = entry.id || entry.session_id || entry.sessionId;
+      if (!sid || typeof entry.thread_name !== 'string') continue;
+      const title = entry.thread_name.trim();
+      if (title) titles[sid] = title.slice(0, 200);
+    } catch {}
+  }
+
+  return titles;
+}
+
 function scanOpenCodeSessions() {
   const sessions = [];
   if (!fs.existsSync(OPENCODE_DB)) return sessions;
@@ -527,6 +545,7 @@ function loadCursorDetail(sessionId) {
 
 function scanCodexSessions() {
   const sessions = [];
+  const codexTitles = parseCodexSessionIndex(CODEX_DIR);
   const codexHistory = path.join(CODEX_DIR, 'history.jsonl');
   if (fs.existsSync(codexHistory)) {
     const lines = readLines(codexHistory);
@@ -546,7 +565,7 @@ function scanCodexSessions() {
             first_ts: ts,
             last_ts: ts,
             messages: 1,
-            first_message: d.text || d.display || d.prompt || '',
+            first_message: codexTitles[sid] || d.text || d.display || d.prompt || '',
             has_detail: false,
             file_size: 0,
             detail_messages: 0,
@@ -592,6 +611,9 @@ function scanCodexSessions() {
         if (existing) {
           existing.has_detail = true;
           existing.file_size = stat.size;
+          if (codexTitles[sid]) {
+            existing.first_message = codexTitles[sid];
+          }
           if (cwd && !existing.project) {
             existing.project = cwd;
             existing.project_short = cwd.replace(os.homedir(), '~');
@@ -605,7 +627,7 @@ function scanCodexSessions() {
             first_ts: stat.mtimeMs,
             last_ts: stat.mtimeMs,
             messages: 0,
-            first_message: '',
+            first_message: codexTitles[sid] || '',
             has_detail: true,
             file_size: stat.size,
             detail_messages: 0,
