@@ -74,8 +74,14 @@ function readLines(filePath) {
 function parseClaudeSessionFile(sessionFile) {
   if (!fs.existsSync(sessionFile)) return null;
 
-  const stat = fs.statSync(sessionFile);
-  const lines = readLines(sessionFile);
+  let stat;
+  let lines;
+  try {
+    stat = fs.statSync(sessionFile);
+    lines = readLines(sessionFile);
+  } catch {
+    return null;
+  }
   let projectPath = '';
   let tool = 'claude';
   let msgCount = 0;
@@ -159,7 +165,14 @@ function parseCodexSessionIndex(codexDir) {
     return NaN;
   };
 
-  for (const line of readLines(indexFile)) {
+  let lines;
+  try {
+    lines = readLines(indexFile);
+  } catch {
+    return titles;
+  }
+
+  for (const line of lines) {
     try {
       const entry = JSON.parse(line);
       const sid = entry.id || entry.session_id || entry.sessionId;
@@ -1049,15 +1062,16 @@ function getGitCommits(projectDir, fromTs, toTs) {
 }
 
 function exportSessionMarkdown(sessionId, project) {
-  const projectKey = project.replace(/[^a-zA-Z0-9-]/g, '-');
-  const sessionFile = path.join(PROJECTS_DIR, projectKey, `${sessionId}.jsonl`);
-
-  if (!fs.existsSync(sessionFile)) {
+  const found = findSessionFile(sessionId, project);
+  if (!found || found.format !== 'claude' || !fs.existsSync(found.file)) {
     return `# Session ${sessionId}\n\nSession file not found.\n`;
   }
 
+  const sessionFile = found.file;
+  const summary = parseClaudeSessionFile(sessionFile);
   const lines = readLines(sessionFile);
-  const parts = [`# Session ${sessionId}\n\n**Project:** ${project}\n`];
+  const projectLabel = project || (summary && summary.projectPath) || '(none)';
+  const parts = [`# Session ${sessionId}\n\n**Project:** ${projectLabel}\n`];
 
   for (const line of lines) {
     try {
@@ -1691,6 +1705,10 @@ module.exports = {
   extractContent,
   isSystemMessage,
   loadOpenCodeDetail,
+  __test: {
+    parseClaudeSessionFile,
+    parseCodexSessionIndex,
+  },
   CLAUDE_DIR,
   CODEX_DIR,
   OPENCODE_DB,
