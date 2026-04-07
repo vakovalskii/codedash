@@ -1705,10 +1705,6 @@ module.exports = {
   extractContent,
   isSystemMessage,
   loadOpenCodeDetail,
-  __test: {
-    parseClaudeSessionFile,
-    parseCodexSessionIndex,
-  },
   CLAUDE_DIR,
   CODEX_DIR,
   OPENCODE_DB,
