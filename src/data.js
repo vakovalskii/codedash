@@ -606,6 +606,71 @@ function loadCursorDetail(sessionId) {
   return { messages: messages.slice(0, 200) };
 }
 
+function parseCodexSessionFile(sessionFile) {
+  if (!fs.existsSync(sessionFile)) return null;
+
+  let stat;
+  let lines;
+  try {
+    stat = fs.statSync(sessionFile);
+    lines = readLines(sessionFile);
+  } catch {
+    return null;
+  }
+
+  const parseTimestamp = (value) => {
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (!trimmed) return NaN;
+      if (/^\d+$/.test(trimmed)) return Number(trimmed);
+      return Date.parse(trimmed);
+    }
+    return NaN;
+  };
+
+  let projectPath = '';
+  let msgCount = 0;
+  let firstMsg = '';
+  let firstTs = stat.mtimeMs;
+  let lastTs = stat.mtimeMs;
+
+  for (const line of lines) {
+    try {
+      const entry = JSON.parse(line);
+      const ts = parseTimestamp(entry.timestamp || entry.ts);
+      if (Number.isFinite(ts)) {
+        if (ts < firstTs) firstTs = ts;
+        if (ts > lastTs) lastTs = ts;
+      }
+
+      if (entry.type === 'session_meta' && entry.payload && entry.payload.cwd && !projectPath) {
+        projectPath = entry.payload.cwd;
+        continue;
+      }
+
+      if (entry.type !== 'response_item' || !entry.payload) continue;
+      const role = entry.payload.role;
+      if (role !== 'user' && role !== 'assistant') continue;
+
+      const content = extractContent(entry.payload.content);
+      if (!content || isSystemMessage(content)) continue;
+
+      msgCount++;
+      if (!firstMsg) firstMsg = content.slice(0, 200);
+    } catch {}
+  }
+
+  return {
+    projectPath,
+    msgCount,
+    firstMsg,
+    firstTs,
+    lastTs,
+    fileSize: stat.size,
+  };
+}
+
 function scanCodexSessions() {
   const sessions = [];
   const codexTitles = parseCodexSessionIndex(CODEX_DIR);
@@ -654,46 +719,44 @@ function scanCodexSessions() {
       walkDir(codexSessionsDir);
 
       for (const f of files) {
-        const stat = fs.statSync(f);
         // Extract session ID from filename (rollout-DATE-UUID.jsonl)
         const basename = path.basename(f, '.jsonl');
         const uuidMatch = basename.match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/);
         if (!uuidMatch) continue;
         const sid = uuidMatch[1];
-        // Try to extract cwd from session_meta
-        let cwd = '';
-        try {
-          const firstLine = fs.readFileSync(f, 'utf8').split('\n')[0].replace(/\r$/, '');
-          const meta = JSON.parse(firstLine);
-          if (meta.type === 'session_meta' && meta.payload && meta.payload.cwd) {
-            cwd = meta.payload.cwd;
-          }
-        } catch {}
+        const summary = parseCodexSessionFile(f);
+        if (!summary) continue;
 
         const existing = sessions.find(s => s.id === sid);
         if (existing) {
           existing.has_detail = true;
-          existing.file_size = stat.size;
+          existing.file_size = summary.fileSize;
+          existing.messages = summary.msgCount;
+          existing.detail_messages = summary.msgCount;
           if (codexTitles[sid]) {
             existing.first_message = codexTitles[sid];
+          } else if (summary.firstMsg && !existing.first_message) {
+            existing.first_message = summary.firstMsg;
           }
-          if (cwd && !existing.project) {
-            existing.project = cwd;
-            existing.project_short = cwd.replace(os.homedir(), '~');
+          if (summary.projectPath && !existing.project) {
+            existing.project = summary.projectPath;
+            existing.project_short = summary.projectPath.replace(os.homedir(), '~');
           }
+          existing.first_ts = Math.min(existing.first_ts, summary.firstTs);
+          existing.last_ts = Math.max(existing.last_ts, summary.lastTs);
         } else {
           sessions.push({
             id: sid,
             tool: 'codex',
-            project: cwd,
-            project_short: cwd ? cwd.replace(os.homedir(), '~') : '',
-            first_ts: stat.mtimeMs,
-            last_ts: stat.mtimeMs,
-            messages: 0,
-            first_message: codexTitles[sid] || '',
+            project: summary.projectPath,
+            project_short: summary.projectPath ? summary.projectPath.replace(os.homedir(), '~') : '',
+            first_ts: summary.firstTs,
+            last_ts: summary.lastTs,
+            messages: summary.msgCount,
+            first_message: codexTitles[sid] || summary.firstMsg || '',
             has_detail: true,
-            file_size: stat.size,
-            detail_messages: 0,
+            file_size: summary.fileSize,
+            detail_messages: summary.msgCount,
           });
         }
       }
