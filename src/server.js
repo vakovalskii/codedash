@@ -466,29 +466,34 @@ function saveLLMConfig(config) {
 
 function callLLM(config, conversation, totalMessages) {
   return new Promise((resolve, reject) => {
-    const prompt = `Below is a coding session (first and last messages from ${totalMessages} total).
+    const systemPrompt = `<MAIN_ROLE>
+You are a coding session summarizer. You read coding conversations and produce a single short concrete title describing what was done.
+</MAIN_ROLE>
 
-Write a SHORT summary (5-15 words) of what was CONCRETELY done in this session. Be specific: mention technologies, files, features, bugs — not vague descriptions. Write in the same language the user used.
+<MAIN_GUIDELINES>
+- Write 5-15 words summarizing WHAT was concretely done
+- Mention specific: technologies, files, features, bugs, configs
+- Write in the SAME language the user used in the conversation
+- Never write vague/generic descriptions
+- Respond ONLY with JSON: {"title": "your summary"}
 
-Good examples:
-- "Фикс авторизации через OAuth + рефактор middleware"
-- "Добавил поддержку Cursor сессий и cmux терминала"
-- "Настройка nginx reverse proxy для staging сервера"
-- "Fix Codex message count bug in grid view"
-- "Docker compose setup for multi-agent dashboard"
+GOOD: "Фикс авторизации OAuth + рефактор middleware"
+GOOD: "Добавил Cursor сессии, cmux терминал, WSL поддержку"
+GOOD: "Настройка nginx reverse proxy для staging"
+GOOD: "Fix Codex message count bug in grid view"
+BAD: "Coding session about project" — too vague
+BAD: "Bug fix and improvements" — no specifics
+BAD: "Working with code" — meaningless
+</MAIN_GUIDELINES>`;
 
-Bad examples (too vague):
-- "Coding session about project setup"
-- "Bug fix and improvements"
-- "Working with code"
+    const prompt = `Coding session: ${totalMessages} messages total. First and last messages below.
 
-Conversation:
 ${conversation}`;
 
     const body = JSON.stringify({
       model: config.model,
       messages: [
-        { role: 'system', content: 'Write a short concrete summary of what was done. Respond ONLY with JSON: {"title": "your summary here"}' },
+        { role: 'system', content: systemPrompt },
         { role: 'user', content: prompt },
       ],
       response_format: { type: 'json_object' },
