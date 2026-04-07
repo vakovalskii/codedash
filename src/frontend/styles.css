@@ -2491,6 +2491,34 @@ body {
 
 .analytics-container { padding: 20px; }
 
+/* ── Analytics sub-tabs ─────────────────────────────────────── */
+.analytics-tabs {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 20px;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 0;
+}
+.atab-btn {
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    padding: 8px 16px;
+    margin-bottom: -1px;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: color 0.15s, border-color 0.15s;
+}
+.atab-btn:hover { color: var(--text-primary); }
+.atab-btn.active {
+    color: var(--accent-blue);
+    border-bottom-color: var(--accent-blue);
+}
+.atab-pane { display: none; }
+.atab-pane[data-tab="overview"] { display: block; } /* default visible until JS runs */
+
 .analytics-summary {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
