@@ -729,8 +729,8 @@ body {
 .detail-panel {
     position: fixed;
     top: 0;
-    right: -550px;
-    width: 550px;
+    right: -700px;
+    width: 700px;
     height: 100vh;
     background: var(--bg-secondary);
     border-left: 1px solid var(--border);
@@ -1363,11 +1363,13 @@ body {
 
 .detail-row {
     display: flex;
-    align-items: center;
+    align-items: baseline;
     gap: 12px;
     padding: 6px 0;
     border-bottom: 1px solid var(--border);
     font-size: 13px;
+    word-break: break-word;
+    min-width: 0;
 }
 
 .detail-label {
