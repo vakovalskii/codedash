@@ -879,9 +879,9 @@ function renderCard(s, idx) {
   html += '<button class="tag-add-btn" onclick="showTagDropdown(event, \'' + s.id + '\')" title="Add tag">+</button>';
   html += '</span>';
   if (s.has_detail) {
-    if (!sessionTitles[s.id]) {
-      html += '<button class="card-gen-btn" onclick="event.stopPropagation();generateTitle(\'' + s.id + '\',\'' + escHtml(s.project || '').replace(/'/g, "\\'") + '\')" title="Generate AI title">&#9883;</button>';
-    }
+    var btnTitle = sessionTitles[s.id] ? 'Regenerate AI title' : 'Generate AI title';
+    var btnIcon = sessionTitles[s.id] ? '&#8635;' : '&#9883;';
+    html += '<button class="card-gen-btn" onclick="event.stopPropagation();generateTitle(\'' + s.id + '\',\'' + escHtml(s.project || '').replace(/'/g, "\\'") + '\')" title="' + btnTitle + '">' + btnIcon + '</button>';
     html += '<button class="card-expand-btn" onclick="event.stopPropagation();toggleExpand(\'' + s.id + '\',\'' + escHtml(s.project || '').replace(/'/g, "\\'") + '\',this)" title="Preview messages">&#9662;</button>';
   }
   html += '</div>';
@@ -1480,10 +1480,11 @@ async function openDetail(s) {
   var infoHtml = '<div class="detail-info">';
   // AI Title row
   var aiTitle = sessionTitles[s.id];
+  var escProject = escHtml(s.project || '').replace(/'/g, "\\'");
   if (aiTitle) {
-    infoHtml += '<div class="detail-row"><span class="detail-label">AI Title</span><span style="font-weight:600">' + escHtml(aiTitle) + '</span></div>';
+    infoHtml += '<div class="detail-row"><span class="detail-label">AI Title</span><span style="font-weight:600;flex:1">' + escHtml(aiTitle) + '</span><button class="toolbar-btn" style="font-size:10px;padding:1px 6px" onclick="generateTitle(\'' + s.id + '\',\'' + escProject + '\')" title="Regenerate">&#8635;</button></div>';
   } else if (s.has_detail) {
-    infoHtml += '<div class="detail-row"><span class="detail-label">AI Title</span><button class="toolbar-btn" style="font-size:11px;padding:2px 8px" onclick="generateTitle(\'' + s.id + '\',\'' + escHtml(s.project || '').replace(/'/g, "\\'") + '\')">Generate</button></div>';
+    infoHtml += '<div class="detail-row"><span class="detail-label">AI Title</span><button class="toolbar-btn" style="font-size:11px;padding:2px 8px" onclick="generateTitle(\'' + s.id + '\',\'' + escProject + '\')">Generate</button></div>';
   }
   var detailToolLabel = s.tool === 'claude-ext' ? 'claude ext' : s.tool;
   infoHtml += '<div class="detail-row"><span class="detail-label">Tool</span><span class="tool-badge tool-' + s.tool + '">' + escHtml(detailToolLabel) + '</span></div>';
