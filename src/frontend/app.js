@@ -55,6 +55,17 @@ function getProjectName(fullPath) {
   return parts[parts.length - 1] || 'unknown';
 }
 
+// Returns the git repo name, stripping /.claude/worktrees/<name> and /.codex/ suffixes
+function getGitProjectName(fullPath) {
+  if (!fullPath) return 'unknown';
+  var cleaned = fullPath.replace(/\/+$/, '');
+  var wt = cleaned.match(/^(.*?)\/.claude\/worktrees\//);
+  if (wt) return wt[1].split('/').pop() || 'unknown';
+  var codex = cleaned.match(/^(.*?)\/.codex\//);
+  if (codex) return codex[1].split('/').pop() || 'unknown';
+  return cleaned.split('/').pop() || 'unknown';
+}
+
 // ── Utilities ──────────────────────────────────────────────────
 
 function timeAgo(dateStr) {
@@ -1127,16 +1138,37 @@ function renderTimeline(container, sessions) {
   container.innerHTML = html;
 }
 
+function renderQACard(s, idx) {
+  var isStarred = stars.indexOf(s.id) >= 0;
+  var toolLabel = s.tool === 'claude-ext' ? 'claude ext' : s.tool;
+  var toolClass = 'tool-' + s.tool;
+  var cost = estimateCost(s.file_size);
+  var costStr = cost > 0 ? '~$' + cost.toFixed(2) : '';
+  var classes = 'qa-item' + (selectedIds.has(s.id) ? ' selected' : '');
+
+  var html = '<div class="' + classes + '" data-id="' + s.id + '" onclick="onCardClick(\'' + s.id + '\', event)">';
+  html += '<span class="tool-badge ' + toolClass + '">' + escHtml(toolLabel) + '</span>';
+  html += '<span class="qa-question">' + escHtml((s.first_message || '').slice(0, 160)) + '</span>';
+  html += '<span class="qa-meta">';
+  html += '<span class="qa-msgs">' + s.messages + ' msgs</span>';
+  if (costStr) html += '<span class="cost-badge">' + costStr + '</span>';
+  html += '<span class="qa-time">' + timeAgo(s.last_ts) + '</span>';
+  html += '</span>';
+  html += '<button class="star-btn' + (isStarred ? ' active' : '') + '" onclick="event.stopPropagation();toggleStar(\'' + s.id + '\')" title="Star">&#9733;</button>';
+  html += '</div>';
+  return html;
+}
+
 function renderProjects(container, sessions) {
-  var byProject = {};
+  var byGit = {};
   sessions.forEach(function(s) {
-    var p = getProjectName(s.project);
-    if (!byProject[p]) byProject[p] = { sessions: [], project: s.project };
-    byProject[p].sessions.push(s);
+    var name = getGitProjectName(s.project);
+    if (!byGit[name]) byGit[name] = [];
+    byGit[name].push(s);
   });
 
-  var sorted = Object.entries(byProject).sort(function(a, b) {
-    return b[1].sessions.length - a[1].sessions.length;
+  var sorted = Object.entries(byGit).sort(function(a, b) {
+    return b[1][0].last_ts - a[1][0].last_ts;
   });
 
   if (sorted.length === 0) {
@@ -1144,26 +1176,26 @@ function renderProjects(container, sessions) {
     return;
   }
 
-  var html = '<div class="projects-grid">';
+  var globalIdx = 0;
+  var html = '<div class="git-projects">';
   sorted.forEach(function(entry) {
     var name = entry[0];
-    var info = entry[1];
+    var list = entry[1].slice().sort(function(a, b) { return b.last_ts - a.last_ts; });
     var color = getProjectColor(name);
-    var totalMsgs = info.sessions.reduce(function(sum, s) { return sum + (s.messages || 0); }, 0);
-    var totalSize = info.sessions.reduce(function(sum, s) { return sum + (s.file_size || 0); }, 0);
-    var latest = info.sessions[0];
+    var totalMsgs = list.reduce(function(s, e) { return s + (e.messages || 0); }, 0);
+    var totalCost = list.reduce(function(s, e) { return s + estimateCost(e.file_size); }, 0);
+    var costLabel = totalCost > 0 ? ' · ~$' + totalCost.toFixed(2) : '';
 
-    html += '<div class="project-card" onclick="openProject(\'' + escHtml(name).replace(/'/g, "\\'") + '\')">';
-    html += '<div class="project-card-header">';
+    html += '<div class="git-project-group">';
+    html += '<div class="git-project-header" onclick="this.parentElement.classList.toggle(\'collapsed\')">';
     html += '<span class="group-dot" style="background:' + color + '"></span>';
-    html += '<span class="project-card-name">' + escHtml(name) + '</span>';
+    html += '<span class="git-project-name">' + escHtml(name) + '</span>';
+    html += '<span class="git-project-stats">' + list.length + ' sessions · ' + totalMsgs + ' msgs' + escHtml(costLabel) + '</span>';
+    html += '<span class="group-chevron">&#9660;</span>';
     html += '</div>';
-    html += '<div class="project-card-stats">';
-    html += '<span>' + info.sessions.length + ' sessions</span>';
-    html += '<span>' + totalMsgs + ' msgs</span>';
-    html += '<span>' + formatBytes(totalSize) + '</span>';
+    html += '<div class="qa-list">';
+    list.forEach(function(s) { html += renderQACard(s, globalIdx++); });
     html += '</div>';
-    html += '<div class="project-card-time">Last: ' + timeAgo(latest.last_ts) + '</div>';
     html += '</div>';
   });
   html += '</div>';

@@ -1470,7 +1470,98 @@ body {
     white-space: nowrap;
 }
 
-/* ── Projects grid ──────────────────────────────────────────── */
+/* ── Git Projects accordion ─────────────────────────────────── */
+
+.git-projects {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.git-project-group {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+}
+
+.git-project-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 16px;
+    cursor: pointer;
+    transition: background 0.12s;
+    user-select: none;
+}
+.git-project-header:hover { background: var(--bg-card-hover); }
+
+.git-project-name {
+    font-size: 14px;
+    font-weight: 700;
+    flex: 0 0 auto;
+}
+
+.git-project-stats {
+    font-size: 12px;
+    color: var(--text-muted);
+    flex: 1;
+}
+
+.git-project-group .group-chevron {
+    font-size: 10px;
+    color: var(--text-muted);
+    transition: transform 0.2s;
+}
+.git-project-group.collapsed .group-chevron { transform: rotate(-90deg); }
+
+/* ── QA session list ────────────────────────────────────────── */
+
+.qa-list {
+    border-top: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+}
+.git-project-group.collapsed .qa-list { display: none; }
+
+.qa-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 16px;
+    cursor: pointer;
+    border-bottom: 1px solid var(--border);
+    transition: background 0.12s;
+    min-width: 0;
+}
+.qa-item:last-child { border-bottom: none; }
+.qa-item:hover { background: var(--bg-card-hover); }
+.qa-item.selected { background: rgba(96, 165, 250, 0.08); }
+
+.qa-question {
+    flex: 1;
+    font-size: 13px;
+    color: var(--text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+}
+
+.qa-meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+}
+
+.qa-msgs, .qa-time {
+    font-size: 12px;
+    color: var(--text-muted);
+    white-space: nowrap;
+}
+
+/* ── Projects grid (kept for reference) ─────────────────────── */
 
 .projects-grid {
     display: grid;
