@@ -8,6 +8,7 @@ let filteredSessions = [];
 let currentView = 'sessions';  // sessions, projects, timeline, activity, starred
 let grouped = true;
 let layout = localStorage.getItem('codedash-layout') || 'grid'; // 'grid' or 'list'
+let groupingMode = normalizeGroupingMode(localStorage.getItem('codedash-grouping-mode'));
 let searchQuery = '';
 let toolFilter = null;  // null, 'claude', 'codex'
 let tagFilter = '';
@@ -55,6 +56,10 @@ function getProjectName(fullPath) {
   return parts[parts.length - 1] || 'unknown';
 }
 
+function normalizeGroupingMode(mode) {
+  return mode === 'repo' ? 'repo' : 'folder';
+}
+
 // Returns the git repo name from session data.
 // Prefers s.git_root resolved by the backend (git rev-parse --show-toplevel),
 // falls back to path-based heuristic for sessions without it.
@@ -67,6 +72,13 @@ function getGitProjectName(fullPath, gitRoot) {
   var codex = cleaned.match(/^(.*?)\/.codex\//);
   if (codex) return codex[1].split('/').pop() || 'unknown';
   return cleaned.split('/').pop() || 'unknown';
+}
+
+function getSessionGroupName(session) {
+  if (groupingMode === 'repo') {
+    return getGitProjectName(session.project, session.git_root);
+  }
+  return getProjectName(session.project);
 }
 
 // ── Utilities ──────────────────────────────────────────────────
@@ -267,6 +279,12 @@ function toggleStar(id) {
 function toggleAITitles(checked) {
   showAITitles = checked;
   localStorage.setItem('codedash-ai-titles', checked ? 'true' : 'false');
+  render();
+}
+
+function saveGroupingMode(mode) {
+  groupingMode = normalizeGroupingMode(mode);
+  localStorage.setItem('codedash-grouping-mode', groupingMode);
   render();
 }
 
@@ -1136,7 +1154,7 @@ function renderGrouped(container, sessions, renderFn) {
   renderFn = renderFn || renderCard;
   var groups = {};
   sessions.forEach(function(s) {
-    var key = getProjectName(s.project);
+    var key = getSessionGroupName(s);
     if (!groups[key]) groups[key] = [];
     groups[key].push(s);
   });
@@ -2375,6 +2393,7 @@ function renderSettings(container) {
   var savedTheme = localStorage.getItem('codedash-theme') || 'dark';
   var savedTerminal = localStorage.getItem('codedash-terminal') || '';
   var aiTitlesOn = localStorage.getItem('codedash-ai-titles') === 'true';
+  var savedGroupingMode = normalizeGroupingMode(localStorage.getItem('codedash-grouping-mode'));
 
   var html = '<div class="settings-page">';
   html += '<h2 style="margin:0 0 24px;font-size:18px;font-weight:600">Settings</h2>';
@@ -2411,6 +2430,19 @@ function renderSettings(container) {
   html += '<input type="checkbox" id="settingsAiToggle"' + (aiTitlesOn ? ' checked' : '') + ' onchange="toggleAITitles(this.checked)">';
   html += '<span style="font-size:13px;color:var(--text-secondary)">Show generated titles</span>';
   html += '</div>';
+  html += '</div>';
+
+  // Grouping
+  html += '<div class="settings-group">';
+  html += '<label class="settings-label">Grouping</label>';
+  html += '<div class="settings-theme-btns">';
+  ['folder', 'repo'].forEach(function(mode) {
+    var active = savedGroupingMode === mode ? ' active' : '';
+    var label = mode === 'repo' ? 'Repository' : 'Folder';
+    html += '<button class="theme-btn' + active + '" onclick="saveGroupingMode(\'' + mode + '\')">' + label + '</button>';
+  });
+  html += '</div>';
+  html += '<p style="font-size:12px;color:var(--text-muted);margin:10px 0 0">Applies to grouped session views like All Sessions and Claude Code. Projects always stay repository-based.</p>';
   html += '</div>';
 
   // LLM Configuration
