@@ -1428,6 +1428,8 @@ function getSessionReplay(sessionId, project) {
   };
 }
 
+const CONTEXT_WINDOW = 200_000; // Claude's max context window (tokens)
+
 // ── Pricing per model (per token, April 2026) ─────────────
 
 const MODEL_PRICING = {
@@ -1457,12 +1459,59 @@ function getModelPricing(model) {
 
 function computeSessionCost(sessionId, project) {
   const found = findSessionFile(sessionId, project);
-  if (!found) return { cost: 0, inputTokens: 0, outputTokens: 0, model: '' };
+  if (!found) return { cost: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreateTokens: 0, contextPctSum: 0, contextTurnCount: 0, model: '' };
 
   let totalCost = 0;
   let totalInput = 0;
   let totalOutput = 0;
+  let totalCacheRead = 0;
+  let totalCacheCreate = 0;
+  let contextPctSum = 0;
+  let contextTurnCount = 0;
   let model = '';
+
+  // OpenCode: query SQLite directly for token data
+  if (found.format === 'opencode') {
+    const safeId = /^[a-zA-Z0-9_-]+$/.test(found.sessionId) ? found.sessionId : '';
+    if (!safeId) return { cost: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreateTokens: 0, contextPctSum: 0, contextTurnCount: 0, model: '' };
+    try {
+      const rows = execSync(
+        `sqlite3 "${OPENCODE_DB}" "SELECT data FROM message WHERE session_id = '${safeId}' AND json_extract(data, '$.role') = 'assistant' ORDER BY time_created"`,
+        { encoding: 'utf8', timeout: 10000 }
+      ).trim();
+      if (rows) {
+        for (const row of rows.split('\n')) {
+          try {
+            const msgData = JSON.parse(row);
+            const t = msgData.tokens || {};
+            if (!model && msgData.modelID) model = msgData.modelID;
+            const inp = t.input || 0;
+            const out = (t.output || 0) + (t.reasoning || 0);
+            const cacheRead = (t.cache && t.cache.read) || 0;
+            const cacheCreate = (t.cache && t.cache.write) || 0;
+            if (inp === 0 && out === 0) continue;
+
+            const pricing = getModelPricing(msgData.modelID || model);
+            totalInput += inp;
+            totalOutput += out;
+            totalCacheRead += cacheRead;
+            totalCacheCreate += cacheCreate;
+            totalCost += inp * pricing.input
+                       + cacheCreate * pricing.cache_create
+                       + cacheRead * pricing.cache_read
+                       + out * pricing.output;
+
+            const contextThisTurn = inp + cacheCreate + cacheRead;
+            if (contextThisTurn > 0) {
+              contextPctSum += (contextThisTurn / CONTEXT_WINDOW) * 100;
+              contextTurnCount++;
+            }
+          } catch {}
+        }
+      }
+    } catch {}
+    return { cost: totalCost, inputTokens: totalInput, outputTokens: totalOutput, cacheReadTokens: totalCacheRead, cacheCreateTokens: totalCacheCreate, contextPctSum, contextTurnCount, model };
+  }
 
   try {
     const lines = readLines(found.file);
@@ -1481,12 +1530,21 @@ function computeSessionCost(sessionId, project) {
           const cacheRead = u.cache_read_input_tokens || 0;
           const out = u.output_tokens || 0;
 
-          totalInput += inp + cacheCreate + cacheRead;
+          totalInput += inp;
           totalOutput += out;
+          totalCacheRead += cacheRead;
+          totalCacheCreate += cacheCreate;
           totalCost += inp * pricing.input
                      + cacheCreate * pricing.cache_create
                      + cacheRead * pricing.cache_read
                      + out * pricing.output;
+
+          // Track per-turn context window usage (average, not peak)
+          const contextThisTurn = inp + cacheCreate + cacheRead;
+          if (contextThisTurn > 0) {
+            contextPctSum += (contextThisTurn / CONTEXT_WINDOW) * 100;
+            contextTurnCount++;
+          }
         }
         // Codex: estimate from file size (no token usage in session files)
       } catch {}
@@ -1505,7 +1563,7 @@ function computeSessionCost(sessionId, project) {
     } catch {}
   }
 
-  return { cost: totalCost, inputTokens: totalInput, outputTokens: totalOutput, model };
+  return { cost: totalCost, inputTokens: totalInput, outputTokens: totalOutput, cacheReadTokens: totalCacheRead, cacheCreateTokens: totalCacheCreate, contextPctSum, contextTurnCount, model };
 }
 
 // ── Cost analytics ────────────────────────────────────────
@@ -1514,20 +1572,102 @@ function getCostAnalytics(sessions) {
   const byDay = {};
   const byProject = {};
   const byWeek = {};
+  const byAgent = {};
   let totalCost = 0;
   let totalTokens = 0;
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
+  let totalCacheReadTokens = 0;
+  let totalCacheCreateTokens = 0;
+  let globalContextPctSum = 0;
+  let globalContextTurnCount = 0;
+  let firstDate = null;
+  let lastDate = null;
+  let sessionsWithData = 0;
+  const agentNoCostData = {};
+  for (const s of sessions) {
+    if (!byAgent[s.tool]) byAgent[s.tool] = { cost: 0, sessions: 0, tokens: 0, estimated: false };
+  }
   const sessionCosts = [];
 
+  // Pre-compute OpenCode costs in one batch query (avoids O(n) execSync calls)
+  const opencodeCostCache = {};
+  const opencodeSessions = sessions.filter(s => s.tool === 'opencode');
+  if (opencodeSessions.length > 0 && fs.existsSync(OPENCODE_DB)) {
+    try {
+      const batchRows = execSync(
+        `sqlite3 "${OPENCODE_DB}" "SELECT session_id, data FROM message WHERE json_extract(data, '$.role') = 'assistant' ORDER BY time_created"`,
+        { encoding: 'utf8', timeout: 30000 }
+      ).trim();
+      if (batchRows) {
+        for (const row of batchRows.split('\n')) {
+          const sepIdx = row.indexOf('|');
+          if (sepIdx < 0) continue;
+          const sessId = row.slice(0, sepIdx);
+          const jsonStr = row.slice(sepIdx + 1);
+          try {
+            const msgData = JSON.parse(jsonStr);
+            const t = msgData.tokens || {};
+            const inp = t.input || 0;
+            const out = (t.output || 0) + (t.reasoning || 0);
+            const cacheRead = (t.cache && t.cache.read) || 0;
+            const cacheCreate = (t.cache && t.cache.write) || 0;
+            if (inp === 0 && out === 0) continue;
+            if (!opencodeCostCache[sessId]) opencodeCostCache[sessId] = { cost: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreateTokens: 0, contextPctSum: 0, contextTurnCount: 0, model: '' };
+            const c = opencodeCostCache[sessId];
+            if (!c.model && msgData.modelID) c.model = msgData.modelID;
+            const pricing = getModelPricing(msgData.modelID || c.model);
+            c.inputTokens += inp;
+            c.outputTokens += out;
+            c.cacheReadTokens += cacheRead;
+            c.cacheCreateTokens += cacheCreate;
+            c.cost += inp * pricing.input + cacheCreate * pricing.cache_create + cacheRead * pricing.cache_read + out * pricing.output;
+            const ctx = inp + cacheCreate + cacheRead;
+            if (ctx > 0) { c.contextPctSum += (ctx / CONTEXT_WINDOW) * 100; c.contextTurnCount++; }
+          } catch {}
+        }
+      }
+    } catch {}
+  }
+
   for (const s of sessions) {
-    const costData = computeSessionCost(s.id, s.project);
+    const costData = (s.tool === 'opencode' && opencodeCostCache[s.id])
+      ? opencodeCostCache[s.id]
+      : computeSessionCost(s.id, s.project);
     const cost = costData.cost;
-    const tokens = costData.inputTokens + costData.outputTokens;
-    if (cost === 0 && tokens === 0) continue;
+    const tokens = costData.inputTokens + costData.outputTokens + costData.cacheReadTokens + costData.cacheCreateTokens;
+    if (cost === 0 && tokens === 0) {
+      if (!agentNoCostData[s.tool]) agentNoCostData[s.tool] = 0;
+      agentNoCostData[s.tool]++;
+      continue;
+    }
+    sessionsWithData++;
     totalCost += cost;
     totalTokens += tokens;
+    totalInputTokens += costData.inputTokens;
+    totalOutputTokens += costData.outputTokens;
+    totalCacheReadTokens += costData.cacheReadTokens;
+    totalCacheCreateTokens += costData.cacheCreateTokens;
 
-    // By day
+    // Per-agent breakdown
+    const agent = s.tool || 'unknown';
+    if (!byAgent[agent]) byAgent[agent] = { cost: 0, sessions: 0, tokens: 0, estimated: false };
+    byAgent[agent].cost += cost;
+    byAgent[agent].sessions++;
+    byAgent[agent].tokens += tokens;
+    if (agent === 'codex') byAgent[agent].estimated = true;
+    if (agent === 'opencode' && !costData.model) byAgent[agent].estimated = true;
+
+    // Context % across all turns
+    globalContextPctSum += costData.contextPctSum;
+    globalContextTurnCount += costData.contextTurnCount;
+
+    // Date range
     const day = s.date || 'unknown';
+    if (s.date) {
+      if (!firstDate || s.date < firstDate) firstDate = s.date;
+      if (!lastDate || s.date > lastDate) lastDate = s.date;
+    }
     if (!byDay[day]) byDay[day] = { cost: 0, sessions: 0, tokens: 0 };
     byDay[day].cost += cost;
     byDay[day].sessions++;
@@ -1557,14 +1697,29 @@ function getCostAnalytics(sessions) {
   // Sort top sessions by cost
   sessionCosts.sort((a, b) => b.cost - a.cost);
 
+  const days = firstDate && lastDate
+    ? Math.max(1, Math.round((new Date(lastDate) - new Date(firstDate)) / 86400000) + 1)
+    : 1;
+
   return {
     totalCost,
     totalTokens,
-    totalSessions: sessions.length,
+    totalInputTokens,
+    totalOutputTokens,
+    totalCacheReadTokens,
+    totalCacheCreateTokens,
+    avgContextPct: globalContextTurnCount > 0 ? Math.round(globalContextPctSum / globalContextTurnCount) : 0,
+    dailyRate: totalCost / days,
+    firstDate,
+    lastDate,
+    days,
+    totalSessions: sessionsWithData,
     byDay,
     byWeek,
     byProject,
     topSessions: sessionCosts.slice(0, 10),
+    byAgent,
+    agentNoCostData,
   };
 }
 
