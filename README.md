@@ -93,12 +93,15 @@ codedash restart
 codedash stop
 ```
 
-Bind host can be configured with `CODEDASH_HOST`:
+Bind host can be configured with `--host=ADDR` or `CODEDASH_HOST`:
 
 ```bash
 codedash run
+codedash run --host=0.0.0.0
 CODEDASH_HOST=0.0.0.0 codedash run
 ```
+
+If both are set, `--host` takes precedence.
 
 **Keyboard Shortcuts**: `/` search, `j/k` navigate, `Enter` open, `x` star, `d` delete, `s` select, `g` group, `r` refresh, `Esc` close
 
@@ -112,7 +115,7 @@ CODEDASH_HOST=0.0.0.0 codedash run
 ~/Library/Application Support/kiro-cli/ Kiro CLI (SQLite)
 ```
 
-Zero dependencies. By default everything runs on `localhost`. Set `CODEDASH_HOST=0.0.0.0` to listen on all interfaces, including your host machine LAN IP.
+Zero dependencies. By default everything runs on `localhost`. Set `--host=0.0.0.0` or `CODEDASH_HOST=0.0.0.0` to listen on all interfaces, including your host machine LAN IP.
 
 ## Install Agents
 

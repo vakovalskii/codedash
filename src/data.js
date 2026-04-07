@@ -71,6 +71,139 @@ function readLines(filePath) {
   return fs.readFileSync(filePath, 'utf8').split('\n').map(l => l.replace(/\r$/, '')).filter(Boolean);
 }
 
+function parseClaudeSessionFile(sessionFile) {
+  if (!fs.existsSync(sessionFile)) return null;
+
+  let stat;
+  let lines;
+  try {
+    stat = fs.statSync(sessionFile);
+    lines = readLines(sessionFile);
+  } catch {
+    return null;
+  }
+  let projectPath = '';
+  let tool = 'claude';
+  let msgCount = 0;
+  let firstMsg = '';
+  let customTitle = '';
+  let firstTs = stat.mtimeMs;
+  let lastTs = stat.mtimeMs;
+  let entrypointFound = false;
+
+  for (const line of lines) {
+    try {
+      const entry = JSON.parse(line);
+      if (entry.type === 'user' || entry.type === 'assistant') msgCount++;
+      if (entry.timestamp) {
+        if (entry.timestamp < firstTs) firstTs = entry.timestamp;
+        if (entry.timestamp > lastTs) lastTs = entry.timestamp;
+      }
+      if (!projectPath && entry.type === 'user' && entry.cwd) {
+        projectPath = entry.cwd;
+      }
+      if (!entrypointFound && entry.type === 'user' && entry.entrypoint) {
+        entrypointFound = true;
+        if (entry.entrypoint !== 'cli') tool = 'claude-ext';
+      }
+      if (entry.type === 'custom-title' && typeof entry.customTitle === 'string') {
+        const title = entry.customTitle.trim();
+        if (title) customTitle = title.slice(0, 200);
+      }
+      if (!firstMsg && entry.type === 'user' && entry.message && entry.message.content) {
+        const content = extractContent(entry.message.content).trim();
+        if (content) firstMsg = content.slice(0, 200);
+      }
+    } catch {}
+  }
+
+  return {
+    projectPath,
+    tool,
+    msgCount,
+    firstMsg,
+    customTitle,
+    firstTs,
+    lastTs,
+    fileSize: stat.size,
+  };
+}
+
+function mergeClaudeSessionDetail(session, summary, sessionFile) {
+  if (!session || !summary) return;
+
+  session.tool = summary.tool || session.tool;
+  session.has_detail = true;
+  session.file_size = summary.fileSize;
+  session.detail_messages = summary.msgCount;
+  session._session_file = sessionFile;
+
+  if (!session.project && summary.projectPath) {
+    session.project = summary.projectPath;
+    session.project_short = summary.projectPath.replace(os.homedir(), '~');
+  }
+
+  if (summary.customTitle) {
+    session.first_message = summary.customTitle;
+  }
+}
+
+function parseCodexSessionIndex(codexDir) {
+  const titles = {};
+  const titleMeta = {};
+  const indexFile = path.join(codexDir, 'session_index.jsonl');
+  if (!fs.existsSync(indexFile)) return titles;
+
+  const parseUpdatedAt = (value) => {
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (!trimmed) return NaN;
+      if (/^\d+$/.test(trimmed)) return Number(trimmed);
+      return Date.parse(trimmed);
+    }
+    return NaN;
+  };
+
+  let lines;
+  try {
+    lines = readLines(indexFile);
+  } catch {
+    return titles;
+  }
+
+  for (const line of lines) {
+    try {
+      const entry = JSON.parse(line);
+      const sid = entry.id || entry.session_id || entry.sessionId;
+      if (!sid || typeof entry.thread_name !== 'string') continue;
+      const title = entry.thread_name.trim();
+      if (!title) continue;
+
+      const updatedAt = parseUpdatedAt(entry.updated_at);
+      const hasUpdatedAt = Number.isFinite(updatedAt);
+      const existing = titleMeta[sid];
+
+      if (!existing) {
+        titles[sid] = title.slice(0, 200);
+        titleMeta[sid] = { updatedAt, hasUpdatedAt };
+        continue;
+      }
+
+      if (
+        (hasUpdatedAt && !existing.hasUpdatedAt) ||
+        (hasUpdatedAt && existing.hasUpdatedAt && updatedAt >= existing.updatedAt) ||
+        (!hasUpdatedAt && !existing.hasUpdatedAt)
+      ) {
+        titles[sid] = title.slice(0, 200);
+        titleMeta[sid] = { updatedAt, hasUpdatedAt };
+      }
+    } catch {}
+  }
+
+  return titles;
+}
+
 function scanOpenCodeSessions() {
   const sessions = [];
   if (!fs.existsSync(OPENCODE_DB)) return sessions;
@@ -475,6 +608,7 @@ function loadCursorDetail(sessionId) {
 
 function scanCodexSessions() {
   const sessions = [];
+  const codexTitles = parseCodexSessionIndex(CODEX_DIR);
   const codexHistory = path.join(CODEX_DIR, 'history.jsonl');
   if (fs.existsSync(codexHistory)) {
     const lines = readLines(codexHistory);
@@ -494,7 +628,7 @@ function scanCodexSessions() {
             first_ts: ts,
             last_ts: ts,
             messages: 1,
-            first_message: d.text || d.display || d.prompt || '',
+            first_message: codexTitles[sid] || d.text || d.display || d.prompt || '',
             has_detail: false,
             file_size: 0,
             detail_messages: 0,
@@ -540,6 +674,9 @@ function scanCodexSessions() {
         if (existing) {
           existing.has_detail = true;
           existing.file_size = stat.size;
+          if (codexTitles[sid]) {
+            existing.first_message = codexTitles[sid];
+          }
           if (cwd && !existing.project) {
             existing.project = cwd;
             existing.project_short = cwd.replace(os.homedir(), '~');
@@ -553,7 +690,7 @@ function scanCodexSessions() {
             first_ts: stat.mtimeMs,
             last_ts: stat.mtimeMs,
             messages: 0,
-            first_message: '',
+            first_message: codexTitles[sid] || '',
             has_detail: true,
             file_size: stat.size,
             detail_messages: 0,
@@ -598,6 +735,7 @@ function loadSessions() {
             last_ts: d.timestamp,
             messages: 0,
             first_message: '',
+            _claude_dir: CLAUDE_DIR,
           };
         }
 
@@ -654,17 +792,22 @@ function loadSessions() {
       if (fs.existsSync(extraHistory)) {
         const lines = readLines(extraHistory);
         for (const line of lines) {
+          let d;
           try {
-            const d = JSON.parse(line);
+            d = JSON.parse(line);
             const sid = d.sessionId;
-            if (!sid || sessions[sid]) continue;
-            sessions[sid] = {
-              id: sid, tool: 'claude',
-              project: d.project || '', project_short: (d.project || '').replace(os.homedir(), '~'),
-              first_ts: d.timestamp, last_ts: d.timestamp,
-              messages: 0, first_message: '',
-            };
+            if (!sid) continue;
+            if (!sessions[sid]) {
+              sessions[sid] = {
+                id: sid, tool: 'claude',
+                project: d.project || '', project_short: (d.project || '').replace(os.homedir(), '~'),
+                first_ts: d.timestamp, last_ts: d.timestamp,
+                messages: 0, first_message: '',
+                _claude_dir: extraClaudeDir,
+              };
+            }
           } catch {}
+          if (!d || !d.sessionId) continue;
           const s = sessions[d.sessionId];
           if (s) { s.last_ts = Math.max(s.last_ts, d.timestamp); s.first_ts = Math.min(s.first_ts, d.timestamp); s.messages++; if (d.display && d.display !== 'exit' && !s.first_message) s.first_message = d.display.slice(0, 200); }
         }
@@ -678,28 +821,34 @@ function loadSessions() {
           for (const file of fs.readdirSync(projDir)) {
             if (!file.endsWith('.jsonl')) continue;
             const sid = file.replace('.jsonl', '');
-            if (sessions[sid]) { if (!sessions[sid].has_detail) { sessions[sid].has_detail = true; sessions[sid].file_size = fs.statSync(path.join(projDir, file)).size; } continue; }
             const fp = path.join(projDir, file);
-            const stat = fs.statSync(fp);
-            let projectPath = '', tool = 'claude', msgCount = 0, firstMsg = '', firstTs = stat.mtimeMs, lastTs = stat.mtimeMs;
-            try {
-              const sLines = readLines(fp);
-              let entrypointFound = false;
-              for (const sl of sLines) {
-                try {
-                  const entry = JSON.parse(sl);
-                  if (entry.type === 'user' || entry.type === 'assistant') msgCount++;
-                  if (entry.timestamp) { if (entry.timestamp < firstTs) firstTs = entry.timestamp; if (entry.timestamp > lastTs) lastTs = entry.timestamp; }
-                  if (!projectPath && entry.type === 'user' && entry.cwd) projectPath = entry.cwd;
-                  if (!entrypointFound && entry.type === 'user' && entry.entrypoint) { entrypointFound = true; if (entry.entrypoint !== 'cli') tool = 'claude-ext'; }
-                  if (!firstMsg && entry.type === 'user' && entry.message && entry.message.content) {
-                    const content = entry.message.content;
-                    if (typeof content === 'string') firstMsg = content.slice(0, 200);
-                  }
-                } catch {}
+            if (sessions[sid]) {
+              const summary = parseClaudeSessionFile(fp);
+              if (summary) mergeClaudeSessionDetail(sessions[sid], summary, fp);
+              else if (!sessions[sid].has_detail) {
+                sessions[sid].has_detail = true;
+                sessions[sid].file_size = fs.statSync(fp).size;
+                sessions[sid]._session_file = fp;
               }
-            } catch {}
-            sessions[sid] = { id: sid, tool, project: projectPath, project_short: projectPath.replace(os.homedir(), '~'), first_ts: firstTs, last_ts: lastTs, messages: msgCount, first_message: firstMsg, has_detail: true, file_size: stat.size, detail_messages: msgCount };
+              continue;
+            }
+            const summary = parseClaudeSessionFile(fp);
+            if (!summary) continue;
+            sessions[sid] = {
+              id: sid,
+              tool: summary.tool,
+              project: summary.projectPath,
+              project_short: summary.projectPath.replace(os.homedir(), '~'),
+              first_ts: summary.firstTs,
+              last_ts: summary.lastTs,
+              messages: summary.msgCount,
+              first_message: summary.customTitle || summary.firstMsg,
+              has_detail: true,
+              file_size: summary.fileSize,
+              detail_messages: summary.msgCount,
+              _claude_dir: extraClaudeDir,
+              _session_file: fp,
+            };
           }
         }
       }
@@ -708,24 +857,31 @@ function loadSessions() {
 
   // Enrich Claude sessions with detail file info
   for (const [sid, s] of Object.entries(sessions)) {
-    if (s.tool !== 'claude') continue;
-    const projectKey = s.project.replace(/[^a-zA-Z0-9-]/g, '-');
-    const sessionFile = path.join(PROJECTS_DIR, projectKey, `${sid}.jsonl`);
+    if (s.tool !== 'claude' && s.tool !== 'claude-ext') continue;
+    let sessionFile = '';
+    if (s._session_file && fs.existsSync(s._session_file)) {
+      sessionFile = s._session_file;
+    } else if (s.project) {
+      const claudeDir = s._claude_dir || CLAUDE_DIR;
+      const projectsDir = path.join(claudeDir, 'projects');
+      const projectKey = s.project.replace(/[^a-zA-Z0-9-]/g, '-');
+      const candidate = path.join(projectsDir, projectKey, `${sid}.jsonl`);
+      if (fs.existsSync(candidate)) sessionFile = candidate;
+    }
+    if (!sessionFile) {
+      const found = findSessionFile(sid, s.project);
+      if (found && found.format === 'claude') sessionFile = found.file;
+    }
+
     if (fs.existsSync(sessionFile)) {
-      s.has_detail = true;
-      s.file_size = fs.statSync(sessionFile).size;
-      try {
-        let msgCount = 0;
-        const sLines = readLines(sessionFile);
-        for (const sl of sLines) {
-          try {
-            const entry = JSON.parse(sl);
-            if (entry.type === 'user' || entry.type === 'assistant') msgCount++;
-          } catch {}
-        }
-        s.detail_messages = msgCount;
-      } catch { s.detail_messages = 0; }
-    } else {
+      const summary = parseClaudeSessionFile(sessionFile);
+      if (summary) mergeClaudeSessionDetail(s, summary, sessionFile);
+      else {
+        s.has_detail = true;
+        s.file_size = fs.statSync(sessionFile).size;
+        s._session_file = sessionFile;
+      }
+    } else if (!s.has_detail) {
       s.has_detail = false;
       s.file_size = 0;
       s.detail_messages = 0;
@@ -741,57 +897,28 @@ function loadSessions() {
         for (const file of fs.readdirSync(projDir)) {
           if (!file.endsWith('.jsonl')) continue;
           const sid = file.replace('.jsonl', '');
-          if (sessions[sid]) continue; // already loaded
           const filePath = path.join(projDir, file);
-          const stat = fs.statSync(filePath);
-          let projectPath = '';
-          let tool = 'claude';
-          let msgCount = 0;
-          let firstMsg = '';
-          let firstTs = stat.mtimeMs;
-          let lastTs = stat.mtimeMs;
-          try {
-            const sLines = readLines(filePath);
-            let entrypointFound = false;
-            for (const sl of sLines) {
-              try {
-                const entry = JSON.parse(sl);
-                if (entry.type === 'user' || entry.type === 'assistant') msgCount++;
-                if (entry.timestamp) {
-                  if (entry.timestamp < firstTs) firstTs = entry.timestamp;
-                  if (entry.timestamp > lastTs) lastTs = entry.timestamp;
-                }
-                if (!projectPath && entry.type === 'user' && entry.cwd) {
-                  projectPath = entry.cwd;
-                }
-                if (!entrypointFound && entry.type === 'user' && entry.entrypoint) {
-                  entrypointFound = true;
-                  if (entry.entrypoint !== 'cli') tool = 'claude-ext';
-                }
-                if (!firstMsg && entry.type === 'user' && entry.message && entry.message.content) {
-                  const content = entry.message.content;
-                  if (typeof content === 'string') firstMsg = content.slice(0, 200);
-                  else if (Array.isArray(content)) {
-                    for (let ci = 0; ci < content.length; ci++) {
-                      if (content[ci].type === 'text' && content[ci].text) { firstMsg = content[ci].text.slice(0, 200); break; }
-                    }
-                  }
-                }
-              } catch {}
-            }
-          } catch {}
+          if (sessions[sid]) {
+            const summary = parseClaudeSessionFile(filePath);
+            if (summary) mergeClaudeSessionDetail(sessions[sid], summary, filePath);
+            continue;
+          }
+          const summary = parseClaudeSessionFile(filePath);
+          if (!summary) continue;
           sessions[sid] = {
             id: sid,
-            tool: tool,
-            project: projectPath,
-            project_short: projectPath.replace(os.homedir(), '~'),
-            first_ts: firstTs,
-            last_ts: lastTs,
-            messages: msgCount,
-            first_message: firstMsg,
+            tool: summary.tool,
+            project: summary.projectPath,
+            project_short: summary.projectPath.replace(os.homedir(), '~'),
+            first_ts: summary.firstTs,
+            last_ts: summary.lastTs,
+            messages: summary.msgCount,
+            first_message: summary.customTitle || summary.firstMsg,
             has_detail: true,
-            file_size: stat.size,
-            detail_messages: msgCount,
+            file_size: summary.fileSize,
+            detail_messages: summary.msgCount,
+            _claude_dir: CLAUDE_DIR,
+            _session_file: filePath,
           };
         }
       }
@@ -935,15 +1062,16 @@ function getGitCommits(projectDir, fromTs, toTs) {
 }
 
 function exportSessionMarkdown(sessionId, project) {
-  const projectKey = project.replace(/[^a-zA-Z0-9-]/g, '-');
-  const sessionFile = path.join(PROJECTS_DIR, projectKey, `${sessionId}.jsonl`);
-
-  if (!fs.existsSync(sessionFile)) {
+  const found = findSessionFile(sessionId, project);
+  if (!found || found.format !== 'claude' || !fs.existsSync(found.file)) {
     return `# Session ${sessionId}\n\nSession file not found.\n`;
   }
 
+  const sessionFile = found.file;
+  const summary = parseClaudeSessionFile(sessionFile);
   const lines = readLines(sessionFile);
-  const parts = [`# Session ${sessionId}\n\n**Project:** ${project}\n`];
+  const projectLabel = project || (summary && summary.projectPath) || '(none)';
+  const parts = [`# Session ${sessionId}\n\n**Project:** ${projectLabel}\n`];
 
   for (const line of lines) {
     try {

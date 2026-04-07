@@ -2,7 +2,7 @@
 
 ## Overview
 
-CodeDash is a zero-dependency Node.js dashboard for AI coding agent sessions. Supports 6 agents: Claude Code, Claude Extension, Codex, Cursor, OpenCode, Kiro. Single process serves a web UI at `localhost:3847` by default, or another bind host via `CODEDASH_HOST`.
+CodeDash is a zero-dependency Node.js dashboard for AI coding agent sessions. Supports 6 agents: Claude Code, Claude Extension, Codex, Cursor, OpenCode, Kiro. Single process serves a web UI at `localhost:3847` by default, or another bind host via `--host=ADDR` / `CODEDASH_HOST`.
 
 ```
 Browser (localhost:3847)            Node.js Server

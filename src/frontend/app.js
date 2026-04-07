@@ -235,17 +235,15 @@ function toggleAITitles(checked) {
   render();
 }
 
-function openLLMSettings() {
-  document.getElementById('llmSettingsOverlay').style.display = 'flex';
+function loadLLMSettings() {
   fetch('/api/llm-config').then(function(r) { return r.json(); }).then(function(c) {
-    document.getElementById('llmUrl').value = c.url || '';
-    document.getElementById('llmApiKey').value = c.apiKey || '';
-    document.getElementById('llmModel').value = c.model || '';
+    var u = document.getElementById('llmUrl');
+    var k = document.getElementById('llmApiKey');
+    var m = document.getElementById('llmModel');
+    if (u) u.value = c.url || '';
+    if (k) k.value = c.apiKey || '';
+    if (m) m.value = c.model || '';
   });
-}
-
-function closeLLMSettings() {
-  document.getElementById('llmSettingsOverlay').style.display = 'none';
 }
 
 function saveLLMSettings() {
@@ -259,7 +257,6 @@ function saveLLMSettings() {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(config),
   }).then(function() {
-    closeLLMSettings();
     showToast('LLM settings saved');
   });
 }
@@ -575,9 +572,179 @@ function onTagFilter(val) {
 }
 
 function onDateFilter() {
-  dateFrom = document.getElementById('dateFrom').value || '';
-  dateTo = document.getElementById('dateTo').value || '';
   applyFilters();
+  updateDateBtn();
+}
+
+// ── Calendar ─────────────────────────────────────────────────
+
+var calYear = new Date().getFullYear();
+var calMonth = new Date().getMonth();
+var calStart = null;
+var calEnd = null;
+var calSelecting = false;
+
+function toggleCalendar() {
+  var popup = document.getElementById('calendarPopup');
+  var btn = document.getElementById('dateBtn');
+  if (!popup || !btn) return;
+  if (popup.classList.contains('open')) {
+    popup.classList.remove('open');
+    return;
+  }
+  renderCalendar();
+  // Position popup below the button
+  var rect = btn.getBoundingClientRect();
+  var popupWidth = 280;
+  var left = rect.left;
+  // Keep within viewport
+  if (left + popupWidth > window.innerWidth - 8) {
+    left = window.innerWidth - popupWidth - 8;
+  }
+  popup.style.left = left + 'px';
+  popup.style.top = (rect.bottom + 4) + 'px';
+  popup.classList.add('open');
+  setTimeout(function() {
+    document.addEventListener('click', closeCalendarOutside, { once: true });
+  }, 0);
+}
+
+function closeCalendarOutside(e) {
+  var popup = document.getElementById('calendarPopup');
+  var btn = document.getElementById('dateBtn');
+  if (popup && !popup.contains(e.target) && btn && !btn.contains(e.target)) {
+    popup.classList.remove('open');
+  } else if (popup && popup.classList.contains('open')) {
+    document.addEventListener('click', closeCalendarOutside, { once: true });
+  }
+}
+
+function renderCalendar() {
+  var popup = document.getElementById('calendarPopup');
+  if (!popup) return;
+
+  var monthNames = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+  var firstDay = new Date(calYear, calMonth, 1);
+  var lastDay = new Date(calYear, calMonth + 1, 0);
+  var startWeekday = (firstDay.getDay() + 6) % 7; // Monday = 0
+  var daysInMonth = lastDay.getDate();
+  var today = new Date();
+  var todayStr = today.getFullYear() + '-' + String(today.getMonth()+1).padStart(2,'0') + '-' + String(today.getDate()).padStart(2,'0');
+
+  var html = '<div class="cal-header">';
+  html += '<button class="cal-nav" onclick="event.stopPropagation();calNav(-1)">&larr;</button>';
+  html += '<span>' + monthNames[calMonth] + ' ' + calYear + '</span>';
+  html += '<button class="cal-nav" onclick="event.stopPropagation();calNav(1)">&rarr;</button>';
+  html += '</div>';
+
+  html += '<div class="cal-weekdays"><span>Mo</span><span>Tu</span><span>We</span><span>Th</span><span>Fr</span><span>Sa</span><span>Su</span></div>';
+  html += '<div class="cal-days">';
+
+  var prevLastDay = new Date(calYear, calMonth, 0).getDate();
+  for (var i = startWeekday - 1; i >= 0; i--) {
+    html += '<div class="cal-day other-month">' + (prevLastDay - i) + '</div>';
+  }
+
+  for (var d = 1; d <= daysInMonth; d++) {
+    var dateStr = calYear + '-' + String(calMonth+1).padStart(2,'0') + '-' + String(d).padStart(2,'0');
+    var cls = 'cal-day';
+    if (dateStr === todayStr) cls += ' today';
+    if (calStart && calEnd) {
+      if (dateStr === calStart) cls += ' range-start';
+      if (dateStr === calEnd) cls += ' range-end';
+      if (dateStr > calStart && dateStr < calEnd) cls += ' in-range';
+      if (calStart === calEnd && dateStr === calStart) cls += ' range-start range-end';
+    } else if (calStart && dateStr === calStart) {
+      cls += ' range-start range-end';
+    }
+    html += '<div class="' + cls + '" onclick="event.stopPropagation();calPickDay(\'' + dateStr + '\')">' + d + '</div>';
+  }
+
+  var totalCells = startWeekday + daysInMonth;
+  var remaining = (7 - (totalCells % 7)) % 7;
+  for (var n = 1; n <= remaining; n++) {
+    html += '<div class="cal-day other-month">' + n + '</div>';
+  }
+  html += '</div>';
+
+  html += '<div class="cal-presets">';
+  var presets = [['All',''],['Today','0'],['7d','7'],['30d','30'],['90d','90']];
+  presets.forEach(function(p) {
+    html += '<button class="cal-preset" onclick="event.stopPropagation();calPreset(\'' + p[1] + '\')">' + p[0] + '</button>';
+  });
+  html += '</div>';
+
+  popup.innerHTML = html;
+}
+
+function calNav(dir) {
+  calMonth += dir;
+  if (calMonth < 0) { calMonth = 11; calYear--; }
+  if (calMonth > 11) { calMonth = 0; calYear++; }
+  renderCalendar();
+}
+
+function calPickDay(dateStr) {
+  if (!calSelecting) {
+    calStart = dateStr;
+    calEnd = null;
+    calSelecting = true;
+  } else {
+    if (dateStr < calStart) {
+      calEnd = calStart;
+      calStart = dateStr;
+    } else {
+      calEnd = dateStr;
+    }
+    calSelecting = false;
+  }
+  renderCalendar();
+  dateFrom = calStart || '';
+  dateTo = calEnd || calStart || '';
+  onDateFilter();
+}
+
+function calPreset(days) {
+  calSelecting = false;
+  if (!days) {
+    calStart = null;
+    calEnd = null;
+    dateFrom = '';
+    dateTo = '';
+  } else {
+    var now = new Date();
+    calEnd = now.getFullYear() + '-' + String(now.getMonth()+1).padStart(2,'0') + '-' + String(now.getDate()).padStart(2,'0');
+    if (days === '0') {
+      calStart = calEnd;
+    } else {
+      var from = new Date(now.getTime() - parseInt(days) * 86400000);
+      calStart = from.getFullYear() + '-' + String(from.getMonth()+1).padStart(2,'0') + '-' + String(from.getDate()).padStart(2,'0');
+    }
+    dateFrom = calStart;
+    dateTo = calEnd;
+  }
+  renderCalendar();
+  onDateFilter();
+  var popup = document.getElementById('calendarPopup');
+  if (popup) popup.classList.remove('open');
+}
+
+function updateDateBtn() {
+  var btn = document.getElementById('dateBtn');
+  var label = document.getElementById('dateBtnLabel');
+  if (!btn || !label) return;
+  if (!dateFrom && !dateTo) {
+    label.textContent = 'All time';
+    btn.classList.remove('has-filter');
+  } else if (dateFrom === dateTo) {
+    label.textContent = dateFrom;
+    btn.classList.add('has-filter');
+  } else {
+    var f = dateFrom.slice(5) || '';
+    var t = dateTo.slice(5) || '';
+    label.textContent = f + ' \u2014 ' + t;
+    btn.classList.add('has-filter');
+  }
 }
 
 function toggleGroup() {
@@ -868,6 +1035,11 @@ function render() {
 
   if (currentView === 'changelog') {
     renderChangelog(content);
+    return;
+  }
+
+  if (currentView === 'settings') {
+    renderSettings(content);
     return;
   }
 
@@ -2103,6 +2275,70 @@ function focusSession(sessionId) {
 }
 
 // ── Changelog view ────────────────────────────────────────────
+
+function renderSettings(container) {
+  var savedTheme = localStorage.getItem('codedash-theme') || 'dark';
+  var savedTerminal = localStorage.getItem('codedash-terminal') || '';
+  var aiTitlesOn = localStorage.getItem('codedash-ai-titles') === 'true';
+
+  var html = '<div class="settings-page">';
+  html += '<h2 style="margin:0 0 24px;font-size:18px;font-weight:600">Settings</h2>';
+
+  // Theme
+  html += '<div class="settings-group">';
+  html += '<label class="settings-label">Theme</label>';
+  html += '<div class="settings-theme-btns">';
+  ['dark', 'light', 'system'].forEach(function(t) {
+    var active = savedTheme === t ? ' active' : '';
+    html += '<button class="theme-btn' + active + '" onclick="saveThemePref(\'' + t + '\');renderSettings(document.getElementById(\'content\'))">' + t.charAt(0).toUpperCase() + t.slice(1) + '</button>';
+  });
+  html += '</div>';
+  html += '</div>';
+
+  // Terminal
+  html += '<div class="settings-group">';
+  html += '<label class="settings-label">Terminal</label>';
+  html += '<select class="settings-select" onchange="saveTerminalPref(this.value)">';
+  if (Array.isArray(availableTerminals)) {
+    availableTerminals.forEach(function(t) {
+      if (!t.available) return;
+      var sel = t.id === savedTerminal ? ' selected' : '';
+      html += '<option value="' + t.id + '"' + sel + '>' + escHtml(t.name) + '</option>';
+    });
+  }
+  html += '</select>';
+  html += '</div>';
+
+  // AI Titles
+  html += '<div class="settings-group">';
+  html += '<label class="settings-label">AI Titles</label>';
+  html += '<div class="settings-checkbox">';
+  html += '<input type="checkbox" id="settingsAiToggle"' + (aiTitlesOn ? ' checked' : '') + ' onchange="toggleAITitles(this.checked)">';
+  html += '<span style="font-size:13px;color:var(--text-secondary)">Show generated titles</span>';
+  html += '</div>';
+  html += '</div>';
+
+  // LLM Configuration
+  html += '<div class="settings-group">';
+  html += '<label class="settings-label">LLM Configuration</label>';
+  html += '<p style="font-size:12px;color:var(--text-muted);margin:0 0 12px">OpenAI-compatible API for session title generation</p>';
+  html += '<div style="display:flex;flex-direction:column;gap:8px">';
+  html += '<input type="text" id="llmUrl" class="settings-select" placeholder="http://host:port/v1">';
+  html += '<input type="password" id="llmApiKey" class="settings-select" placeholder="API Key (sk-...)">';
+  html += '<input type="text" id="llmModel" class="settings-select" placeholder="Model (gpt-4o-mini)">';
+  html += '</div>';
+  html += '<div style="display:flex;gap:8px;margin-top:12px">';
+  html += '<button class="theme-btn active" onclick="saveLLMSettings()">Save</button>';
+  html += '<button class="theme-btn" onclick="testLLMConnection()">Test Connection</button>';
+  html += '</div>';
+  html += '</div>';
+
+  html += '</div>';
+  container.innerHTML = html;
+
+  // Load LLM config into the inputs
+  loadLLMSettings();
+}
 
 async function renderChangelog(container) {
   container.innerHTML = '<div class="loading">Loading changelog...</div>';
