@@ -3,7 +3,7 @@ const http = require('http');
 const https = require('https');
 const { URL } = require('url');
 const { exec, execFile } = require('child_process');
-const { loadSessions, loadSessionDetail, deleteSession, getGitCommits, exportSessionMarkdown, getSessionPreview, searchFullText, getActiveSessions, getSessionReplay, getCostAnalytics, computeSessionCost } = require('./data');
+const { loadSessions, loadSessionDetail, deleteSession, getGitCommits, exportSessionMarkdown, getSessionPreview, searchFullText, getActiveSessions, getSessionReplay, getCostAnalytics, computeSessionCost, getProjectGitInfo } = require('./data');
 const { detectTerminals, openInTerminal, focusTerminalByPid } = require('./terminals');
 const { convertSession } = require('./convert');
 const { generateHandoff } = require('./handoff');
@@ -157,6 +157,13 @@ function startServer(host, port, openBrowser = true) {
       const to = parseInt(parsed.searchParams.get('to') || Date.now().toString());
       const commits = getGitCommits(project, from, to);
       json(res, commits);
+    }
+
+    // ── Project git info ────────────────────
+    else if (req.method === 'GET' && pathname === '/api/git-info') {
+      const project = parsed.searchParams.get('project') || '';
+      const info = getProjectGitInfo(project);
+      json(res, info || { error: 'No git repo found' });
     }
 
     // ── Active sessions ─────────────────────
@@ -529,9 +536,17 @@ ${conversation}`;
           try {
             title = JSON.parse(content).title;
           } catch {
-            // Fallback: use raw content if not valid JSON
-            title = content.replace(/["\n]/g, '').trim();
+            // Fallback: extract title from malformed JSON or raw text
+            var m = content.match(/["']?title["']?\s*[:=]\s*["']([^"']+)["']/i);
+            if (m) {
+              title = m[1].trim();
+            } else {
+              // Strip JSON artifacts and use as-is
+              title = content.replace(/[{}"'\n]/g, '').replace(/^title\s*[:=]\s*/i, '').trim();
+            }
           }
+          // Sanitize: limit length, strip leftover JSON
+          if (title) title = title.replace(/^\{.*?:\s*/, '').slice(0, 80).trim();
           resolve(title || 'Untitled session');
         } catch (e) {
           reject(new Error('Failed to parse LLM response: ' + data.slice(0, 200)));

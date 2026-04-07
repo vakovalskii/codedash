@@ -55,6 +55,20 @@ function getProjectName(fullPath) {
   return parts[parts.length - 1] || 'unknown';
 }
 
+// Returns the git repo name from session data.
+// Prefers s.git_root resolved by the backend (git rev-parse --show-toplevel),
+// falls back to path-based heuristic for sessions without it.
+function getGitProjectName(fullPath, gitRoot) {
+  if (gitRoot) return gitRoot.replace(/\/+$/, '').split('/').pop() || 'unknown';
+  if (!fullPath) return 'unknown';
+  var cleaned = fullPath.replace(/\/+$/, '');
+  var wt = cleaned.match(/^(.*?)\/.claude\/worktrees\//);
+  if (wt) return wt[1].split('/').pop() || 'unknown';
+  var codex = cleaned.match(/^(.*?)\/.codex\//);
+  if (codex) return codex[1].split('/').pop() || 'unknown';
+  return cleaned.split('/').pop() || 'unknown';
+}
+
 // ── Utilities ──────────────────────────────────────────────────
 
 function timeAgo(dateStr) {
@@ -137,6 +151,62 @@ function estimateCost(fileSize) {
   return tokens * 0.3 * (3.0 / 1e6) + tokens * 0.7 * (15.0 / 1e6);
 }
 
+// ── Subscription service plans (pricing as of 2025) ─────────────
+var SERVICE_PLANS = {
+  'Claude': { label: 'Claude (Anthropic)', plans: [
+    { name: 'Pro', price: 20 },
+    { name: 'Max 5×', price: 100 },
+    { name: 'Max 20×', price: 200 }
+  ]},
+  'OpenAI': { label: 'OpenAI (ChatGPT)', plans: [
+    { name: 'Plus', price: 20 },
+    { name: 'Pro', price: 200 }
+  ]},
+  'Cursor': { label: 'Cursor', plans: [
+    { name: 'Pro', price: 20 },
+    { name: 'Pro+', price: 60 },
+    { name: 'Ultra', price: 200 }
+  ]},
+  'Kiro': { label: 'Kiro', plans: [
+    { name: 'Pro', price: 20 },
+    { name: 'Pro+', price: 40 },
+    { name: 'Power', price: 200 }
+  ]},
+  'OpenCode': { label: 'OpenCode', plans: [
+    { name: 'Go', price: 10 }
+  ]}
+};
+
+function onSubServiceChange() {
+  var serviceEl = document.getElementById('sub-new-service');
+  var planEl = document.getElementById('sub-new-plan');
+  var paidEl = document.getElementById('sub-new-paid');
+  var service = serviceEl ? serviceEl.value : '';
+  if (!planEl) return;
+  planEl.innerHTML = '<option value="">— select plan —</option>';
+  paidEl.value = '';
+  if (service && SERVICE_PLANS[service]) {
+    SERVICE_PLANS[service].plans.forEach(function(p) {
+      var opt = document.createElement('option');
+      opt.value = p.name;
+      opt.textContent = p.name + ' ($' + p.price + '/mo)';
+      planEl.appendChild(opt);
+    });
+  }
+}
+
+function onSubPlanChange() {
+  var serviceEl = document.getElementById('sub-new-service');
+  var planEl = document.getElementById('sub-new-plan');
+  var paidEl = document.getElementById('sub-new-paid');
+  var service = serviceEl ? serviceEl.value : '';
+  var planName = planEl ? planEl.value : '';
+  if (service && planName && SERVICE_PLANS[service]) {
+    var found = SERVICE_PLANS[service].plans.find(function(p) { return p.name === planName; });
+    if (found && paidEl) paidEl.value = found.price;
+  }
+}
+
 // ── Subscription config helpers ──────────────────────────────────
 function getSubscriptionConfig() {
   var raw = JSON.parse(localStorage.getItem('codedash-subscription') || 'null');
@@ -148,12 +218,14 @@ function getSubscriptionConfig() {
 function saveSubscriptionConfig(cfg) { localStorage.setItem('codedash-subscription', JSON.stringify(cfg)); }
 function subTotalPaid(entries) { return entries.reduce(function(s,e){return s+(parseFloat(e.paid)||0);},0); }
 function addSubEntry() {
-  var plan = (document.getElementById('sub-new-plan').value || '').trim();
+  var service = (document.getElementById('sub-new-service').value || '').trim();
+  var planEl = document.getElementById('sub-new-plan');
+  var plan = planEl ? planEl.value.trim() : '';
   var paid = parseFloat(document.getElementById('sub-new-paid').value) || 0;
   var from = (document.getElementById('sub-new-from').value || '').trim();
   if (!paid) return;
   var cfg = getSubscriptionConfig();
-  cfg.entries.push({ plan: plan || 'Subscription', paid: paid, from: from });
+  cfg.entries.push({ service: service || '', plan: plan || 'Subscription', paid: paid, from: from });
   cfg.entries.sort(function(a,b){return (a.from||'').localeCompare(b.from||'');});
   saveSubscriptionConfig(cfg);
   render();
@@ -515,8 +587,7 @@ function applyFilters() {
 
     // Tool filter
     if (toolFilter) {
-      // claude-ext sessions show under both 'claude' and 'cursor' filters
-      var toolMatch = s.tool === toolFilter || (s.tool === 'claude-ext' && (toolFilter === 'cursor' || toolFilter === 'claude'));
+      var toolMatch = s.tool === toolFilter || (s.tool === 'claude-ext' && toolFilter === 'claude');
       if (!toolMatch) continue;
     }
 
@@ -845,9 +916,9 @@ function renderCard(s, idx) {
   html += '<button class="tag-add-btn" onclick="showTagDropdown(event, \'' + s.id + '\')" title="Add tag">+</button>';
   html += '</span>';
   if (s.has_detail) {
-    if (!sessionTitles[s.id]) {
-      html += '<button class="card-gen-btn" onclick="event.stopPropagation();generateTitle(\'' + s.id + '\',\'' + escHtml(s.project || '').replace(/'/g, "\\'") + '\')" title="Generate AI title">&#9883;</button>';
-    }
+    var btnTitle = sessionTitles[s.id] ? 'Regenerate AI title' : 'Generate AI title';
+    var btnIcon = sessionTitles[s.id] ? '&#8635;' : '&#9883;';
+    html += '<button class="card-gen-btn" onclick="event.stopPropagation();generateTitle(\'' + s.id + '\',\'' + escHtml(s.project || '').replace(/'/g, "\\'") + '\')" title="' + btnTitle + '">' + btnIcon + '</button>';
     html += '<button class="card-expand-btn" onclick="event.stopPropagation();toggleExpand(\'' + s.id + '\',\'' + escHtml(s.project || '').replace(/'/g, "\\'") + '\',this)" title="Preview messages">&#9662;</button>';
   }
   html += '</div>';
@@ -1164,16 +1235,37 @@ function renderTimeline(container, sessions) {
   container.innerHTML = html;
 }
 
+function renderQACard(s, idx) {
+  var isStarred = stars.indexOf(s.id) >= 0;
+  var toolLabel = s.tool === 'claude-ext' ? 'claude ext' : s.tool;
+  var toolClass = 'tool-' + s.tool;
+  var cost = estimateCost(s.file_size);
+  var costStr = cost > 0 ? '~$' + cost.toFixed(2) : '';
+  var classes = 'qa-item' + (selectedIds.has(s.id) ? ' selected' : '');
+
+  var html = '<div class="' + classes + '" data-id="' + s.id + '" onclick="onCardClick(\'' + s.id + '\', event)">';
+  html += '<span class="tool-badge ' + toolClass + '">' + escHtml(toolLabel) + '</span>';
+  html += '<span class="qa-question">' + escHtml((s.first_message || '').slice(0, 160)) + '</span>';
+  html += '<span class="qa-meta">';
+  html += '<span class="qa-msgs">' + s.messages + ' msgs</span>';
+  if (costStr) html += '<span class="cost-badge">' + costStr + '</span>';
+  html += '<span class="qa-time">' + timeAgo(s.last_ts) + '</span>';
+  html += '</span>';
+  html += '<button class="star-btn' + (isStarred ? ' active' : '') + '" onclick="event.stopPropagation();toggleStar(\'' + s.id + '\')" title="Star">&#9733;</button>';
+  html += '</div>';
+  return html;
+}
+
 function renderProjects(container, sessions) {
-  var byProject = {};
+  var byGit = {};
   sessions.forEach(function(s) {
-    var p = getProjectName(s.project);
-    if (!byProject[p]) byProject[p] = { sessions: [], project: s.project };
-    byProject[p].sessions.push(s);
+    var name = getGitProjectName(s.project, s.git_root);
+    if (!byGit[name]) byGit[name] = [];
+    byGit[name].push(s);
   });
 
-  var sorted = Object.entries(byProject).sort(function(a, b) {
-    return b[1].sessions.length - a[1].sessions.length;
+  var sorted = Object.entries(byGit).sort(function(a, b) {
+    return b[1][0].last_ts - a[1][0].last_ts;
   });
 
   if (sorted.length === 0) {
@@ -1181,26 +1273,26 @@ function renderProjects(container, sessions) {
     return;
   }
 
-  var html = '<div class="projects-grid">';
+  var globalIdx = 0;
+  var html = '<div class="git-projects">';
   sorted.forEach(function(entry) {
     var name = entry[0];
-    var info = entry[1];
+    var list = entry[1].slice().sort(function(a, b) { return b.last_ts - a.last_ts; });
     var color = getProjectColor(name);
-    var totalMsgs = info.sessions.reduce(function(sum, s) { return sum + (s.messages || 0); }, 0);
-    var totalSize = info.sessions.reduce(function(sum, s) { return sum + (s.file_size || 0); }, 0);
-    var latest = info.sessions[0];
+    var totalMsgs = list.reduce(function(s, e) { return s + (e.messages || 0); }, 0);
+    var totalCost = list.reduce(function(s, e) { return s + estimateCost(e.file_size); }, 0);
+    var costLabel = totalCost > 0 ? ' · ~$' + totalCost.toFixed(2) : '';
 
-    html += '<div class="project-card" onclick="openProject(\'' + escHtml(name).replace(/'/g, "\\'") + '\')">';
-    html += '<div class="project-card-header">';
+    html += '<div class="git-project-group">';
+    html += '<div class="git-project-header" onclick="this.parentElement.classList.toggle(\'collapsed\')">';
     html += '<span class="group-dot" style="background:' + color + '"></span>';
-    html += '<span class="project-card-name">' + escHtml(name) + '</span>';
+    html += '<span class="git-project-name">' + escHtml(name) + '</span>';
+    html += '<span class="git-project-stats">' + list.length + ' sessions · ' + totalMsgs + ' msgs' + escHtml(costLabel) + '</span>';
+    html += '<span class="group-chevron">&#9660;</span>';
     html += '</div>';
-    html += '<div class="project-card-stats">';
-    html += '<span>' + info.sessions.length + ' sessions</span>';
-    html += '<span>' + totalMsgs + ' msgs</span>';
-    html += '<span>' + formatBytes(totalSize) + '</span>';
+    html += '<div class="qa-list">';
+    list.forEach(function(s) { html += renderQACard(s, globalIdx++); });
     html += '</div>';
-    html += '<div class="project-card-time">Last: ' + timeAgo(latest.last_ts) + '</div>';
     html += '</div>';
   });
   html += '</div>';
@@ -1425,14 +1517,16 @@ async function openDetail(s) {
   var infoHtml = '<div class="detail-info">';
   // AI Title row
   var aiTitle = sessionTitles[s.id];
+  var escProject = escHtml(s.project || '').replace(/'/g, "\\'");
   if (aiTitle) {
-    infoHtml += '<div class="detail-row"><span class="detail-label">AI Title</span><span style="font-weight:600">' + escHtml(aiTitle) + '</span></div>';
+    infoHtml += '<div class="detail-row"><span class="detail-label">AI Title</span><span style="font-weight:600;flex:1">' + escHtml(aiTitle) + '</span><button class="toolbar-btn" style="font-size:10px;padding:1px 6px" onclick="generateTitle(\'' + s.id + '\',\'' + escProject + '\')" title="Regenerate">&#8635;</button></div>';
   } else if (s.has_detail) {
-    infoHtml += '<div class="detail-row"><span class="detail-label">AI Title</span><button class="toolbar-btn" style="font-size:11px;padding:2px 8px" onclick="generateTitle(\'' + s.id + '\',\'' + escHtml(s.project || '').replace(/'/g, "\\'") + '\')">Generate</button></div>';
+    infoHtml += '<div class="detail-row"><span class="detail-label">AI Title</span><button class="toolbar-btn" style="font-size:11px;padding:2px 8px" onclick="generateTitle(\'' + s.id + '\',\'' + escProject + '\')">Generate</button></div>';
   }
   var detailToolLabel = s.tool === 'claude-ext' ? 'claude ext' : s.tool;
   infoHtml += '<div class="detail-row"><span class="detail-label">Tool</span><span class="tool-badge tool-' + s.tool + '">' + escHtml(detailToolLabel) + '</span></div>';
   infoHtml += '<div class="detail-row"><span class="detail-label">Project</span><span>' + escHtml(s.project_short || s.project || '') + '</span></div>';
+  infoHtml += '<div class="detail-git-info" id="detail-git-info"></div>';
   infoHtml += '<div class="detail-row"><span class="detail-label">Session ID</span><span class="mono">' + escHtml(s.id) + '</span></div>';
   infoHtml += '<div class="detail-row"><span class="detail-label">First seen</span><span>' + escHtml(s.first_time || '') + '</span></div>';
   infoHtml += '<div class="detail-row"><span class="detail-label">Last seen</span><span>' + escHtml(s.last_time || '') + ' (' + timeAgo(s.last_ts) + ')</span></div>';
@@ -1527,6 +1621,32 @@ async function openDetail(s) {
     var estBadge = document.getElementById('detail-cost');
     if (estBadge) estBadge.style.opacity = '0.5';
   });
+
+  // Load git info
+  if (s.project) {
+    fetch('/api/git-info?project=' + encodeURIComponent(s.project))
+      .then(function(r) { return r.json(); })
+      .then(function(git) {
+        var el = document.getElementById('detail-git-info');
+        if (!el || git.error) return;
+        var html = '';
+        if (git.branch) {
+          html += '<div class="detail-row"><span class="detail-label">Branch</span><span class="git-branch">' + escHtml(git.branch);
+          if (git.isDirty) html += ' <span class="git-dirty">*</span>';
+          html += '</span></div>';
+        }
+        if (git.lastCommit) {
+          html += '<div class="detail-row"><span class="detail-label">Last commit</span><span class="mono" style="font-size:11px">';
+          if (git.lastCommitHash) html += '<span style="color:var(--accent-blue)">' + escHtml(git.lastCommitHash) + '</span> ';
+          html += escHtml(git.lastCommit) + '</span></div>';
+        }
+        if (git.remoteUrl) {
+          var displayUrl = git.remoteUrl.replace(/\.git$/, '').replace(/^https?:\/\//, '').replace(/^git@([^:]+):/, '$1/');
+          html += '<div class="detail-row"><span class="detail-label">Remote</span><span class="mono" style="font-size:11px">' + escHtml(displayUrl) + '</span></div>';
+        }
+        el.innerHTML = html;
+      }).catch(function() {});
+  }
 
   // Load git commits
   if (s.project) {
@@ -2144,9 +2264,11 @@ async function renderAnalytics(container) {
     html += '<div class="sub-entries">';
     if (subEntries.length > 0) {
       subEntries.forEach(function(e, i) {
+        var serviceLabel = e.service && SERVICE_PLANS[e.service] ? SERVICE_PLANS[e.service].label : e.service || '';
         html += '<div class="sub-entry-row">';
+        if (serviceLabel) html += '<span class="sub-entry-service">' + escHtml(serviceLabel) + '</span>';
         html += '<span class="sub-entry-plan">' + escHtml(e.plan || '\u2014') + '</span>';
-        html += '<span class="sub-entry-paid">$' + parseFloat(e.paid || 0).toFixed(2) + '</span>';
+        html += '<span class="sub-entry-paid">$' + parseFloat(e.paid || 0).toFixed(2) + '/mo</span>';
         html += '<span class="sub-entry-from">' + (e.from ? 'from ' + e.from : 'no date') + '</span>';
         html += '<button class="sub-entry-remove" onclick="removeSubEntry(' + i + ')" title="Remove">\u00d7</button>';
         html += '</div>';
@@ -2155,9 +2277,14 @@ async function renderAnalytics(container) {
     html += '</div>';
 
     // Add form
+    var serviceOptions = '<option value="">— service —</option>' +
+      Object.keys(SERVICE_PLANS).map(function(k) {
+        return '<option value="' + k + '">' + SERVICE_PLANS[k].label + '</option>';
+      }).join('');
     html += '<div class="sub-add-form">';
-    html += '<input id="sub-new-plan" type="text" placeholder="Plan (Pro, Max\u2026)" />';
-    html += '<input id="sub-new-paid" type="number" min="0" step="0.01" placeholder="Amount ($)" />';
+    html += '<select id="sub-new-service" onchange="onSubServiceChange()">' + serviceOptions + '</select>';
+    html += '<select id="sub-new-plan" onchange="onSubPlanChange()"><option value="">— plan —</option></select>';
+    html += '<input id="sub-new-paid" type="number" min="0" step="0.01" placeholder="$/mo" />';
     html += '<input id="sub-new-from" type="date" title="Start date of this billing period" />';
     html += '<button onclick="addSubEntry()">+ Add period</button>';
     html += '</div>';

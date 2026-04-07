@@ -90,6 +90,7 @@ function parseClaudeSessionFile(sessionFile) {
   let firstTs = stat.mtimeMs;
   let lastTs = stat.mtimeMs;
   let entrypointFound = false;
+  let worktreeOriginalCwd = '';
 
   for (const line of lines) {
     try {
@@ -101,6 +102,11 @@ function parseClaudeSessionFile(sessionFile) {
       }
       if (!projectPath && entry.type === 'user' && entry.cwd) {
         projectPath = entry.cwd;
+      }
+      // worktree-state is written by Claude Code when a session runs inside a git worktree.
+      // originalCwd is the main checkout directory — safe to use in containers (no git needed).
+      if (!worktreeOriginalCwd && entry.type === 'worktree-state' && entry.worktreeSession && entry.worktreeSession.originalCwd) {
+        worktreeOriginalCwd = entry.worktreeSession.originalCwd;
       }
       if (!entrypointFound && entry.type === 'user' && entry.entrypoint) {
         entrypointFound = true;
@@ -126,6 +132,7 @@ function parseClaudeSessionFile(sessionFile) {
     firstTs,
     lastTs,
     fileSize: stat.size,
+    worktreeOriginalCwd,
   };
 }
 
@@ -141,6 +148,10 @@ function mergeClaudeSessionDetail(session, summary, sessionFile) {
   if (!session.project && summary.projectPath) {
     session.project = summary.projectPath;
     session.project_short = summary.projectPath.replace(os.homedir(), '~');
+  }
+
+  if (summary.worktreeOriginalCwd) {
+    session.worktree_original_cwd = summary.worktreeOriginalCwd;
   }
 
   if (summary.customTitle) {
@@ -209,16 +220,17 @@ function scanOpenCodeSessions() {
   if (!fs.existsSync(OPENCODE_DB)) return sessions;
 
   try {
-    // Use sqlite3 CLI to avoid Node version dependency
+    // Use sqlite3 CLI with tab separator — session titles can contain pipes
+    // (e.g. "review changes [commit|branch|pr]") which break the default | separator
     const rows = execSync(
-      `sqlite3 "${OPENCODE_DB}" "SELECT s.id, s.title, s.directory, s.time_created, s.time_updated, COUNT(m.id) as msg_count FROM session s LEFT JOIN message m ON m.session_id = s.id GROUP BY s.id ORDER BY s.time_updated DESC"`,
+      `sqlite3 -separator $'\\t' "${OPENCODE_DB}" "SELECT s.id, s.title, s.directory, s.time_created, s.time_updated, COUNT(m.id) as msg_count FROM session s LEFT JOIN message m ON m.session_id = s.id GROUP BY s.id ORDER BY s.time_updated DESC"`,
       { encoding: 'utf8', timeout: 5000 }
     ).trim();
 
     if (!rows) return sessions;
 
     for (const row of rows.split('\n')) {
-      const parts = row.split('|');
+      const parts = row.split('\t');
       if (parts.length < 6) continue;
       const [id, title, directory, timeCreated, timeUpdated, msgCount] = parts;
 
@@ -318,14 +330,14 @@ function scanKiroSessions() {
 
   try {
     const rows = execSync(
-      `sqlite3 "${KIRO_DB}" "SELECT key, conversation_id, created_at, updated_at, substr(value, 1, 500), length(value) FROM conversations_v2 ORDER BY updated_at DESC"`,
+      `sqlite3 -separator $'\\t' "${KIRO_DB}" "SELECT key, conversation_id, created_at, updated_at, substr(value, 1, 500), length(value) FROM conversations_v2 ORDER BY updated_at DESC"`,
       { encoding: 'utf8', timeout: 5000 }
     ).trim();
 
     if (!rows) return sessions;
 
     for (const row of rows.split('\n')) {
-      const parts = row.split('|');
+      const parts = row.split('\t');
       if (parts.length < 5) continue;
       const [directory, convId, createdAt, updatedAt, valuePeek, valueLen] = parts;
 
@@ -606,6 +618,71 @@ function loadCursorDetail(sessionId) {
   return { messages: messages.slice(0, 200) };
 }
 
+function parseCodexSessionFile(sessionFile) {
+  if (!fs.existsSync(sessionFile)) return null;
+
+  let stat;
+  let lines;
+  try {
+    stat = fs.statSync(sessionFile);
+    lines = readLines(sessionFile);
+  } catch {
+    return null;
+  }
+
+  const parseTimestamp = (value) => {
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (!trimmed) return NaN;
+      if (/^\d+$/.test(trimmed)) return Number(trimmed);
+      return Date.parse(trimmed);
+    }
+    return NaN;
+  };
+
+  let projectPath = '';
+  let msgCount = 0;
+  let firstMsg = '';
+  let firstTs = stat.mtimeMs;
+  let lastTs = stat.mtimeMs;
+
+  for (const line of lines) {
+    try {
+      const entry = JSON.parse(line);
+      const ts = parseTimestamp(entry.timestamp || entry.ts);
+      if (Number.isFinite(ts)) {
+        if (ts < firstTs) firstTs = ts;
+        if (ts > lastTs) lastTs = ts;
+      }
+
+      if (entry.type === 'session_meta' && entry.payload && entry.payload.cwd && !projectPath) {
+        projectPath = entry.payload.cwd;
+        continue;
+      }
+
+      if (entry.type !== 'response_item' || !entry.payload) continue;
+      const role = entry.payload.role;
+      if (role !== 'user' && role !== 'assistant') continue;
+
+      const content = extractContent(entry.payload.content);
+      if (!content || isSystemMessage(content)) continue;
+
+      msgCount++;
+      if (!firstMsg) firstMsg = content.slice(0, 200);
+    } catch {}
+  }
+
+  return {
+    projectPath,
+    msgCount,
+    firstMsg,
+    firstTs,
+    lastTs,
+    fileSize: stat.size,
+  };
+}
+
 function scanCodexSessions() {
   const sessions = [];
   const codexTitles = parseCodexSessionIndex(CODEX_DIR);
@@ -654,46 +731,44 @@ function scanCodexSessions() {
       walkDir(codexSessionsDir);
 
       for (const f of files) {
-        const stat = fs.statSync(f);
         // Extract session ID from filename (rollout-DATE-UUID.jsonl)
         const basename = path.basename(f, '.jsonl');
         const uuidMatch = basename.match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/);
         if (!uuidMatch) continue;
         const sid = uuidMatch[1];
-        // Try to extract cwd from session_meta
-        let cwd = '';
-        try {
-          const firstLine = fs.readFileSync(f, 'utf8').split('\n')[0].replace(/\r$/, '');
-          const meta = JSON.parse(firstLine);
-          if (meta.type === 'session_meta' && meta.payload && meta.payload.cwd) {
-            cwd = meta.payload.cwd;
-          }
-        } catch {}
+        const summary = parseCodexSessionFile(f);
+        if (!summary) continue;
 
         const existing = sessions.find(s => s.id === sid);
         if (existing) {
           existing.has_detail = true;
-          existing.file_size = stat.size;
+          existing.file_size = summary.fileSize;
+          existing.messages = summary.msgCount;
+          existing.detail_messages = summary.msgCount;
           if (codexTitles[sid]) {
             existing.first_message = codexTitles[sid];
+          } else if (summary.firstMsg && !existing.first_message) {
+            existing.first_message = summary.firstMsg;
           }
-          if (cwd && !existing.project) {
-            existing.project = cwd;
-            existing.project_short = cwd.replace(os.homedir(), '~');
+          if (summary.projectPath && !existing.project) {
+            existing.project = summary.projectPath;
+            existing.project_short = summary.projectPath.replace(os.homedir(), '~');
           }
+          existing.first_ts = Math.min(existing.first_ts, summary.firstTs);
+          existing.last_ts = Math.max(existing.last_ts, summary.lastTs);
         } else {
           sessions.push({
             id: sid,
             tool: 'codex',
-            project: cwd,
-            project_short: cwd ? cwd.replace(os.homedir(), '~') : '',
-            first_ts: stat.mtimeMs,
-            last_ts: stat.mtimeMs,
-            messages: 0,
-            first_message: codexTitles[sid] || '',
+            project: summary.projectPath,
+            project_short: summary.projectPath ? summary.projectPath.replace(os.homedir(), '~') : '',
+            first_ts: summary.firstTs,
+            last_ts: summary.lastTs,
+            messages: summary.msgCount,
+            first_message: codexTitles[sid] || summary.firstMsg || '',
             has_detail: true,
-            file_size: stat.size,
-            detail_messages: 0,
+            file_size: summary.fileSize,
+            detail_messages: summary.msgCount,
           });
         }
       }
@@ -701,6 +776,73 @@ function scanCodexSessions() {
   }
 
   return sessions;
+}
+
+// ── Git root resolver ───────────────────────────────────────
+//
+// Priority order for determining the git root of a session:
+//   1. worktree-state.originalCwd — written by Claude Code into the JSONL when
+//      the session runs inside a git worktree. Container-safe: no git required.
+//   2. git rev-parse --show-toplevel — resolves the root at runtime. Fails
+//      gracefully (returns '') in containerized setups where git repos are not
+//      mounted; the try/catch ensures it never crashes the server.
+//   3. Path heuristic in the frontend (getGitProjectName) — parses /.claude/worktrees/
+//      from the session cwd string. Works without git for standard worktree layouts.
+
+const _gitRootCache = {};
+
+function resolveGitRoot(projectPath) {
+  if (!projectPath) return '';
+  if (_gitRootCache[projectPath] !== undefined) return _gitRootCache[projectPath];
+  try {
+    const root = execSync(`git -C "${projectPath}" rev-parse --show-toplevel 2>/dev/null`, {
+      encoding: 'utf8', timeout: 2000
+    }).trim();
+    _gitRootCache[projectPath] = root;
+    return root;
+  } catch {
+    // git not available or project path not mounted (e.g. containerised env) — fall back gracefully
+    _gitRootCache[projectPath] = '';
+    return '';
+  }
+}
+
+const _gitInfoCache = {};
+const GIT_INFO_CACHE_TTL = 30000; // 30 seconds
+
+function getProjectGitInfo(projectPath) {
+  if (!projectPath || !fs.existsSync(projectPath)) return null;
+  if (process.platform === 'win32') return null;
+
+  const now = Date.now();
+  const cached = _gitInfoCache[projectPath];
+  if (cached && (now - cached._ts) < GIT_INFO_CACHE_TTL) return cached;
+
+  const gitRoot = resolveGitRoot(projectPath);
+  if (!gitRoot) return null;
+
+  const cwd = gitRoot;
+  const opts = { encoding: 'utf8', timeout: 3000, stdio: ['pipe', 'pipe', 'pipe'] };
+  const info = { gitRoot, branch: '', remoteUrl: '', lastCommit: '', lastCommitDate: '', isDirty: false, _ts: now };
+
+  try { info.branch = execSync(`git -C "${cwd}" rev-parse --abbrev-ref HEAD 2>/dev/null`, opts).trim(); } catch {}
+  try { info.remoteUrl = execSync(`git -C "${cwd}" config --get remote.origin.url 2>/dev/null`, opts).trim(); } catch {}
+  try {
+    const log = execSync(`git -C "${cwd}" log -1 --format="%h %s" 2>/dev/null`, opts).trim();
+    if (log) {
+      const sp = log.indexOf(' ');
+      info.lastCommit = sp > 0 ? log.slice(sp + 1).slice(0, 80) : log;
+      info.lastCommitHash = sp > 0 ? log.slice(0, sp) : '';
+    }
+  } catch {}
+  try { info.lastCommitDate = execSync(`git -C "${cwd}" log -1 --format="%ci" 2>/dev/null`, opts).trim(); } catch {}
+  try {
+    const status = execSync(`git -C "${cwd}" status --porcelain 2>/dev/null`, opts).trim();
+    info.isDirty = status.length > 0;
+  } catch {}
+
+  _gitInfoCache[projectPath] = info;
+  return info;
 }
 
 // ── Public API ─────────────────────────────────────────────
@@ -848,6 +990,7 @@ function loadSessions() {
               detail_messages: summary.msgCount,
               _claude_dir: extraClaudeDir,
               _session_file: fp,
+              worktree_original_cwd: summary.worktreeOriginalCwd || '',
             };
           }
         }
@@ -919,6 +1062,7 @@ function loadSessions() {
             detail_messages: summary.msgCount,
             _claude_dir: CLAUDE_DIR,
             _session_file: filePath,
+            worktree_original_cwd: summary.worktreeOriginalCwd || '',
           };
         }
       }
@@ -927,11 +1071,17 @@ function loadSessions() {
 
   const result = Object.values(sessions).sort((a, b) => b.last_ts - a.last_ts);
 
+  // Collect unique project paths and resolve git roots in one pass
+  const uniquePaths = [...new Set(result.map(s => s.project).filter(Boolean))];
+  for (const p of uniquePaths) resolveGitRoot(p);
+
   for (const s of result) {
     s.first_time = new Date(s.first_ts).toLocaleString('sv-SE').slice(0, 16);
     s.last_time = new Date(s.last_ts).toLocaleString('sv-SE').slice(0, 16);
     const dt = new Date(s.last_ts);
     s.date = dt.getFullYear() + '-' + String(dt.getMonth()+1).padStart(2,'0') + '-' + String(dt.getDate()).padStart(2,'0');
+    // Priority: worktree-state.originalCwd (container-safe) > git rev-parse > path heuristic (frontend)
+    s.git_root = s.worktree_original_cwd || (s.project ? (_gitRootCache[s.project] || '') : '');
   }
 
   _sessionsCache = result;
@@ -1846,6 +1996,7 @@ function getActiveSessions() {
 module.exports = {
   loadSessions,
   loadSessionDetail,
+  getProjectGitInfo,
   deleteSession,
   getGitCommits,
   exportSessionMarkdown,

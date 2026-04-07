@@ -369,7 +369,7 @@ body {
     flex-shrink: 0;
 }
 
-.card-body { flex: 1; min-width: 0; }
+.card-body { flex: 1; min-width: 0; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 
 .card-title {
     font-size: 14px;
@@ -729,8 +729,8 @@ body {
 .detail-panel {
     position: fixed;
     top: 0;
-    right: -550px;
-    width: 550px;
+    right: -700px;
+    width: 700px;
     height: 100vh;
     background: var(--bg-secondary);
     border-left: 1px solid var(--border);
@@ -1363,11 +1363,13 @@ body {
 
 .detail-row {
     display: flex;
-    align-items: center;
+    align-items: baseline;
     gap: 12px;
     padding: 6px 0;
     border-bottom: 1px solid var(--border);
     font-size: 13px;
+    word-break: break-word;
+    min-width: 0;
 }
 
 .detail-label {
@@ -1375,6 +1377,15 @@ body {
     flex-shrink: 0;
     color: var(--text-muted);
     font-size: 12px;
+}
+
+.git-branch {
+    font-weight: 600;
+    color: var(--accent-purple);
+}
+.git-dirty {
+    color: var(--accent-orange);
+    font-weight: 700;
 }
 
 .detail-messages {
@@ -1470,7 +1481,98 @@ body {
     white-space: nowrap;
 }
 
-/* ── Projects grid ──────────────────────────────────────────── */
+/* ── Git Projects accordion ─────────────────────────────────── */
+
+.git-projects {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.git-project-group {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+}
+
+.git-project-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 16px;
+    cursor: pointer;
+    transition: background 0.12s;
+    user-select: none;
+}
+.git-project-header:hover { background: var(--bg-card-hover); }
+
+.git-project-name {
+    font-size: 14px;
+    font-weight: 700;
+    flex: 0 0 auto;
+}
+
+.git-project-stats {
+    font-size: 12px;
+    color: var(--text-muted);
+    flex: 1;
+}
+
+.git-project-group .group-chevron {
+    font-size: 10px;
+    color: var(--text-muted);
+    transition: transform 0.2s;
+}
+.git-project-group.collapsed .group-chevron { transform: rotate(-90deg); }
+
+/* ── QA session list ────────────────────────────────────────── */
+
+.qa-list {
+    border-top: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+}
+.git-project-group.collapsed .qa-list { display: none; }
+
+.qa-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 16px;
+    cursor: pointer;
+    border-bottom: 1px solid var(--border);
+    transition: background 0.12s;
+    min-width: 0;
+}
+.qa-item:last-child { border-bottom: none; }
+.qa-item:hover { background: var(--bg-card-hover); }
+.qa-item.selected { background: rgba(96, 165, 250, 0.08); }
+
+.qa-question {
+    flex: 1;
+    font-size: 13px;
+    color: var(--text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+}
+
+.qa-meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+}
+
+.qa-msgs, .qa-time {
+    font-size: 12px;
+    color: var(--text-muted);
+    white-space: nowrap;
+}
+
+/* ── Projects grid (kept for reference) ─────────────────────── */
 
 .projects-grid {
     display: grid;
@@ -1633,12 +1735,15 @@ body {
     position: relative;
     border-radius: 12px;
     padding: 2px;
+    display: flex;
+    flex-direction: column;
 }
 
 .card-live-wrap > .card {
     border: none;
     position: relative;
     z-index: 1;
+    flex: 1;
 }
 
 .card-live-wrap .live-border {
@@ -2274,8 +2379,9 @@ body {
     font-size: 13px;
 }
 
-.sub-entry-plan { font-weight: 600; min-width: 80px; }
-.sub-entry-paid { color: var(--accent-green); min-width: 70px; }
+.sub-entry-service { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px; color: var(--accent-blue); background: rgba(96,165,250,0.12); border-radius: 4px; padding: 2px 6px; }
+.sub-entry-plan { font-weight: 600; min-width: 60px; }
+.sub-entry-paid { color: var(--accent-green); min-width: 80px; }
 .sub-entry-from { color: var(--text-muted); flex: 1; }
 .sub-entry-remove {
     background: none;
@@ -2304,8 +2410,18 @@ body {
     font-size: 13px;
 }
 
-.sub-add-form input[type="text"] { width: 130px; }
-.sub-add-form input[type="number"] { width: 100px; }
+.sub-add-form select {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 10px;
+    color: var(--text);
+    font-size: 13px;
+    cursor: pointer;
+}
+.sub-add-form select:first-child { width: 170px; }
+.sub-add-form select:nth-child(2) { width: 150px; }
+.sub-add-form input[type="number"] { width: 80px; }
 .sub-add-form input[type="date"] { width: 140px; }
 
 .sub-add-form button {
