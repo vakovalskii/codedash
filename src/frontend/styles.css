@@ -1377,6 +1377,15 @@ body {
     font-size: 12px;
 }
 
+.git-branch {
+    font-weight: 600;
+    color: var(--accent-purple);
+}
+.git-dirty {
+    color: var(--accent-orange);
+    font-weight: 700;
+}
+
 .detail-messages {
     margin-top: 16px;
 }

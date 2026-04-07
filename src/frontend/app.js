@@ -1488,6 +1488,7 @@ async function openDetail(s) {
   var detailToolLabel = s.tool === 'claude-ext' ? 'claude ext' : s.tool;
   infoHtml += '<div class="detail-row"><span class="detail-label">Tool</span><span class="tool-badge tool-' + s.tool + '">' + escHtml(detailToolLabel) + '</span></div>';
   infoHtml += '<div class="detail-row"><span class="detail-label">Project</span><span>' + escHtml(s.project_short || s.project || '') + '</span></div>';
+  infoHtml += '<div class="detail-git-info" id="detail-git-info"></div>';
   infoHtml += '<div class="detail-row"><span class="detail-label">Session ID</span><span class="mono">' + escHtml(s.id) + '</span></div>';
   infoHtml += '<div class="detail-row"><span class="detail-label">First seen</span><span>' + escHtml(s.first_time || '') + '</span></div>';
   infoHtml += '<div class="detail-row"><span class="detail-label">Last seen</span><span>' + escHtml(s.last_time || '') + ' (' + timeAgo(s.last_ts) + ')</span></div>';
@@ -1582,6 +1583,32 @@ async function openDetail(s) {
     var estBadge = document.getElementById('detail-cost');
     if (estBadge) estBadge.style.opacity = '0.5';
   });
+
+  // Load git info
+  if (s.project) {
+    fetch('/api/git-info?project=' + encodeURIComponent(s.project))
+      .then(function(r) { return r.json(); })
+      .then(function(git) {
+        var el = document.getElementById('detail-git-info');
+        if (!el || git.error) return;
+        var html = '';
+        if (git.branch) {
+          html += '<div class="detail-row"><span class="detail-label">Branch</span><span class="git-branch">' + escHtml(git.branch);
+          if (git.isDirty) html += ' <span class="git-dirty">*</span>';
+          html += '</span></div>';
+        }
+        if (git.lastCommit) {
+          html += '<div class="detail-row"><span class="detail-label">Last commit</span><span class="mono" style="font-size:11px">';
+          if (git.lastCommitHash) html += '<span style="color:var(--accent-blue)">' + escHtml(git.lastCommitHash) + '</span> ';
+          html += escHtml(git.lastCommit) + '</span></div>';
+        }
+        if (git.remoteUrl) {
+          var displayUrl = git.remoteUrl.replace(/\.git$/, '').replace(/^https?:\/\//, '').replace(/^git@([^:]+):/, '$1/');
+          html += '<div class="detail-row"><span class="detail-label">Remote</span><span class="mono" style="font-size:11px">' + escHtml(displayUrl) + '</span></div>';
+        }
+        el.innerHTML = html;
+      }).catch(function() {});
+  }
 
   // Load git commits
   if (s.project) {

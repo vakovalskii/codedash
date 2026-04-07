@@ -3,7 +3,7 @@ const http = require('http');
 const https = require('https');
 const { URL } = require('url');
 const { exec } = require('child_process');
-const { loadSessions, loadSessionDetail, deleteSession, getGitCommits, exportSessionMarkdown, getSessionPreview, searchFullText, getActiveSessions, getSessionReplay, getCostAnalytics, computeSessionCost } = require('./data');
+const { loadSessions, loadSessionDetail, deleteSession, getGitCommits, exportSessionMarkdown, getSessionPreview, searchFullText, getActiveSessions, getSessionReplay, getCostAnalytics, computeSessionCost, getProjectGitInfo } = require('./data');
 const { detectTerminals, openInTerminal, focusTerminalByPid } = require('./terminals');
 const { convertSession } = require('./convert');
 const { generateHandoff } = require('./handoff');
@@ -153,6 +153,13 @@ function startServer(host, port, openBrowser = true) {
       const to = parseInt(parsed.searchParams.get('to') || Date.now().toString());
       const commits = getGitCommits(project, from, to);
       json(res, commits);
+    }
+
+    // ── Project git info ────────────────────
+    else if (req.method === 'GET' && pathname === '/api/git-info') {
+      const project = parsed.searchParams.get('project') || '';
+      const info = getProjectGitInfo(project);
+      json(res, info || { error: 'No git repo found' });
     }
 
     // ── Active sessions ─────────────────────

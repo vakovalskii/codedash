@@ -807,6 +807,44 @@ function resolveGitRoot(projectPath) {
   }
 }
 
+const _gitInfoCache = {};
+const GIT_INFO_CACHE_TTL = 30000; // 30 seconds
+
+function getProjectGitInfo(projectPath) {
+  if (!projectPath || !fs.existsSync(projectPath)) return null;
+  if (process.platform === 'win32') return null;
+
+  const now = Date.now();
+  const cached = _gitInfoCache[projectPath];
+  if (cached && (now - cached._ts) < GIT_INFO_CACHE_TTL) return cached;
+
+  const gitRoot = resolveGitRoot(projectPath);
+  if (!gitRoot) return null;
+
+  const cwd = gitRoot;
+  const opts = { encoding: 'utf8', timeout: 3000, stdio: ['pipe', 'pipe', 'pipe'] };
+  const info = { gitRoot, branch: '', remoteUrl: '', lastCommit: '', lastCommitDate: '', isDirty: false, _ts: now };
+
+  try { info.branch = execSync(`git -C "${cwd}" rev-parse --abbrev-ref HEAD 2>/dev/null`, opts).trim(); } catch {}
+  try { info.remoteUrl = execSync(`git -C "${cwd}" config --get remote.origin.url 2>/dev/null`, opts).trim(); } catch {}
+  try {
+    const log = execSync(`git -C "${cwd}" log -1 --format="%h %s" 2>/dev/null`, opts).trim();
+    if (log) {
+      const sp = log.indexOf(' ');
+      info.lastCommit = sp > 0 ? log.slice(sp + 1).slice(0, 80) : log;
+      info.lastCommitHash = sp > 0 ? log.slice(0, sp) : '';
+    }
+  } catch {}
+  try { info.lastCommitDate = execSync(`git -C "${cwd}" log -1 --format="%ci" 2>/dev/null`, opts).trim(); } catch {}
+  try {
+    const status = execSync(`git -C "${cwd}" status --porcelain 2>/dev/null`, opts).trim();
+    info.isDirty = status.length > 0;
+  } catch {}
+
+  _gitInfoCache[projectPath] = info;
+  return info;
+}
+
 // ── Public API ─────────────────────────────────────────────
 
 let _sessionsCache = null;
@@ -1958,6 +1996,7 @@ function getActiveSessions() {
 module.exports = {
   loadSessions,
   loadSessionDetail,
+  getProjectGitInfo,
   deleteSession,
   getGitCommits,
   exportSessionMarkdown,
