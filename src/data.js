@@ -2240,23 +2240,52 @@ function getOrCreateAnonId() {
 
 function getDailyStats(sessions) {
   const byDay = {};
+  const ensureDay = (date) => {
+    if (!byDay[date]) byDay[date] = { date, sessions: 0, messages: 0, hours: 0, cost: 0, agents: {} };
+    return byDay[date];
+  };
+
   for (const s of sessions) {
-    if (!s.date) continue;
-    if (!byDay[s.date]) byDay[s.date] = { date: s.date, sessions: 0, messages: 0, hours: 0, cost: 0, agents: {} };
-    const d = byDay[s.date];
-    d.sessions++;
-    d.messages += (s.detail_messages || s.messages || 0);
-    // Hours = time between first and last message
-    const durationMs = (s.last_ts || 0) - (s.first_ts || 0);
-    if (durationMs > 0) d.hours += durationMs / 3600000;
-    // Cost
+    if (!s.first_ts || !s.last_ts) continue;
+    const msgs = s.detail_messages || s.messages || 0;
+    const totalMs = Math.max(s.last_ts - s.first_ts, 0);
+
+    // Cost per session (computed once)
     const costData = computeSessionCost(s.id, s.project);
-    if (costData && costData.cost) d.cost += costData.cost;
-    // Agent breakdown
+    const sessionCost = (costData && costData.cost) || 0;
+
+    // Distribute across all days the session spans (local timezone)
+    const startDay = new Date(s.first_ts);
+    const endDay = new Date(s.last_ts);
+    const days = [];
+    const fmtDay = (d) => d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+    const dt = new Date(startDay.getFullYear(), startDay.getMonth(), startDay.getDate());
+    const endDt = new Date(endDay.getFullYear(), endDay.getMonth(), endDay.getDate());
+    while (dt <= endDt) {
+      days.push(fmtDay(dt));
+      dt.setDate(dt.getDate() + 1);
+    }
+    if (days.length === 0) days.push(s.date || fmtDay(new Date(s.last_ts)));
+
+    const numDays = days.length;
+    const msgsPerDay = Math.ceil(msgs / numDays);
+    const hoursPerDay = (totalMs / 3600000) / numDays;
+    // Cap hours at 16h/day max (can't code more than that)
+    const cappedHours = Math.min(hoursPerDay, 16);
+    const costPerDay = sessionCost / numDays;
     const tool = s.tool || 'unknown';
-    if (!d.agents[tool]) d.agents[tool] = 0;
-    d.agents[tool]++;
+
+    for (const day of days) {
+      const d = ensureDay(day);
+      d.sessions++;
+      d.messages += msgsPerDay;
+      d.hours += cappedHours;
+      d.cost += costPerDay;
+      d.agents[tool] = (d.agents[tool] || 0) + 1;
+    }
   }
+  // Round hours to 1 decimal
+  for (const d of Object.values(byDay)) d.hours = Math.round(d.hours * 10) / 10;
   return Object.values(byDay).sort((a, b) => b.date.localeCompare(a.date));
 }
 
