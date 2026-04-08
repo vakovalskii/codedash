@@ -102,6 +102,8 @@ function parseOpenCodeMcpServer(toolName) {
 const PARSED_CACHE_FILE = path.join(os.tmpdir(), 'codedash-parsed-cache.json');
 let _parsedDiskCache = null;
 let _parsedDiskCacheDirty = false;
+// Reverse index: file path -> cache key (avoids repeated fs.statSync)
+const _fileCacheKeyIndex = {};
 
 function _loadParsedDiskCache() {
   if (_parsedDiskCache) return;
@@ -134,6 +136,7 @@ function parseClaudeSessionFile(sessionFile) {
   // Check disk cache (keyed by file path + mtime + size)
   _loadParsedDiskCache();
   const cacheKey = sessionFile + '|' + stat.mtimeMs + '|' + stat.size;
+  _fileCacheKeyIndex[sessionFile] = cacheKey;
   if (_parsedDiskCache[cacheKey]) return _parsedDiskCache[cacheKey];
 
   let lines;
@@ -2196,9 +2199,61 @@ function getModelPricing(model) {
 
 // ── Compute real cost from session file token usage ────────
 
+// Disk cache for computed session costs
+const COST_CACHE_FILE = path.join(os.tmpdir(), 'codedash-cost-cache.json');
+let _costDiskCache = null;
+
+function _loadCostDiskCache() {
+  if (_costDiskCache) return;
+  try {
+    if (fs.existsSync(COST_CACHE_FILE)) {
+      _costDiskCache = JSON.parse(fs.readFileSync(COST_CACHE_FILE, 'utf8'));
+    }
+  } catch {}
+  if (!_costDiskCache) _costDiskCache = {};
+}
+
+function _saveCostDiskCache() {
+  if (!_costDiskCache) return;
+  try {
+    fs.writeFileSync(COST_CACHE_FILE, JSON.stringify(_costDiskCache));
+  } catch {}
+}
+
+const EMPTY_COST = { cost: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreateTokens: 0, contextPctSum: 0, contextTurnCount: 0, model: '' };
+
+// In-memory cost cache (reset when sessions cache resets)
+const _costMemCache = {};
+
 function computeSessionCost(sessionId, project) {
+  // Fast in-memory cache (same session never changes within request cycle)
+  if (_costMemCache[sessionId] !== undefined) return _costMemCache[sessionId];
+
   const found = findSessionFile(sessionId, project);
-  if (!found) return { cost: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreateTokens: 0, contextPctSum: 0, contextTurnCount: 0, model: '' };
+  if (!found) { _costMemCache[sessionId] = EMPTY_COST; return EMPTY_COST; }
+
+  // Skip formats that never have cost data
+  if (found.format === 'cursor' || found.format === 'kiro') { _costMemCache[sessionId] = EMPTY_COST; return EMPTY_COST; }
+
+  // Check disk cache (keyed by file path + mtime + size for JSONL, sessionId for SQLite)
+  _loadCostDiskCache();
+  let cacheKey = '';
+  if (found.format === 'opencode') {
+    cacheKey = 'opencode:' + sessionId;
+  } else if (found.file) {
+    // Use file stat lookup (reuse from parsed cache index if available)
+    const cached = _fileCacheKeyIndex[found.file];
+    if (cached) {
+      cacheKey = cached;
+    } else {
+      try {
+        const stat = fs.statSync(found.file);
+        cacheKey = found.file + '|' + stat.mtimeMs + '|' + stat.size;
+        _fileCacheKeyIndex[found.file] = cacheKey;
+      } catch {}
+    }
+  }
+  if (cacheKey && _costDiskCache[cacheKey]) return _costDiskCache[cacheKey];
 
   let totalCost = 0;
   let totalInput = 0;
@@ -2302,7 +2357,10 @@ function computeSessionCost(sessionId, project) {
     } catch {}
   }
 
-  return { cost: totalCost, inputTokens: totalInput, outputTokens: totalOutput, cacheReadTokens: totalCacheRead, cacheCreateTokens: totalCacheCreate, contextPctSum, contextTurnCount, model };
+  const result = { cost: totalCost, inputTokens: totalInput, outputTokens: totalOutput, cacheReadTokens: totalCacheRead, cacheCreateTokens: totalCacheCreate, contextPctSum, contextTurnCount, model };
+  if (cacheKey) _costDiskCache[cacheKey] = result;
+  _costMemCache[sessionId] = result;
+  return result;
 }
 
 // ── Cost analytics ────────────────────────────────────────
@@ -2450,6 +2508,8 @@ function getCostAnalytics(sessions) {
     if (sc.last_ts >= now - 3600000) last1hCost += sc.cost;
     if (sc.date === todayStr) todayCost += sc.cost;
   }
+
+  _saveCostDiskCache();
 
   return {
     totalCost,
@@ -2625,12 +2685,83 @@ const fmtLocalDay = (ts) => {
   return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
 };
 
+// Disk cache for per-session daily message breakdown
+const DAILY_STATS_CACHE_FILE = path.join(os.tmpdir(), 'codedash-daily-stats-cache.json');
+let _dailyStatsDiskCache = null;
+
+function _loadDailyStatsDiskCache() {
+  if (_dailyStatsDiskCache) return;
+  try {
+    if (fs.existsSync(DAILY_STATS_CACHE_FILE)) {
+      _dailyStatsDiskCache = JSON.parse(fs.readFileSync(DAILY_STATS_CACHE_FILE, 'utf8'));
+    }
+  } catch {}
+  if (!_dailyStatsDiskCache) _dailyStatsDiskCache = {};
+}
+
+function _saveDailyStatsDiskCache() {
+  if (!_dailyStatsDiskCache) return;
+  try {
+    fs.writeFileSync(DAILY_STATS_CACHE_FILE, JSON.stringify(_dailyStatsDiskCache));
+  } catch {}
+}
+
+function _computeSessionDailyBreakdown(s, found) {
+  const msgsByDay = {};
+  const tsByDay = {};
+  try {
+    const lines = readLines(found.file);
+    for (const line of lines) {
+      try {
+        const entry = JSON.parse(line);
+        let isUser = false;
+        let hasText = false;
+        let ts = 0;
+
+        if (found.format === 'claude') {
+          if (entry.type !== 'user') continue;
+          isUser = true;
+          if (entry.timestamp) ts = typeof entry.timestamp === 'number' ? entry.timestamp : new Date(entry.timestamp).getTime();
+          const c = entry.message && entry.message.content;
+          if (typeof c === 'string' && c.trim()) hasText = true;
+          else if (Array.isArray(c)) { for (const p of c) { if (p.type === 'text' && p.text && p.text.trim()) { hasText = true; break; } } }
+        } else if (found.format === 'cursor') {
+          if (entry.role !== 'user') continue;
+          isUser = true;
+          ts = s.first_ts;
+          const c = (entry.message || {}).content;
+          if (Array.isArray(c)) { for (const p of c) { if (p.type === 'text' && p.text && p.text.replace(/<\/?user_query>/g,'').trim()) { hasText = true; break; } } }
+          else if (typeof c === 'string' && c.trim()) hasText = true;
+        } else if (found.format === 'codex') {
+          if (entry.type === 'response_item' && entry.payload && entry.payload.role === 'user') {
+            isUser = true;
+            ts = s.first_ts;
+            const c = entry.payload.content;
+            if (Array.isArray(c)) { for (const p of c) { if ((p.text || '').trim()) { hasText = true; break; } } }
+          } else continue;
+        }
+
+        if (!isUser || !hasText) continue;
+        if (!ts || ts < 1000000000000) ts = s.first_ts;
+        const day = (found.format === 'claude' && ts) ? fmtLocalDay(ts) : (s.date || fmtLocalDay(s.last_ts));
+        msgsByDay[day] = (msgsByDay[day] || 0) + 1;
+        if (!tsByDay[day]) tsByDay[day] = { first: ts, last: ts };
+        if (ts < tsByDay[day].first) tsByDay[day].first = ts;
+        if (ts > tsByDay[day].last) tsByDay[day].last = ts;
+      } catch {}
+    }
+  } catch {}
+  return { msgsByDay, tsByDay };
+}
+
 function getDailyStats(sessions) {
   const byDay = {};
   const ensureDay = (date) => {
     if (!byDay[date]) byDay[date] = { date, sessions: 0, messages: 0, hours: 0, cost: 0, agents: {} };
     return byDay[date];
   };
+
+  _loadDailyStatsDiskCache();
 
   for (const s of sessions) {
     if (!s.first_ts || !s.last_ts) continue;
@@ -2642,53 +2773,21 @@ function getDailyStats(sessions) {
 
     // For sessions with detail files — read actual message timestamps
     const found = s.has_detail ? findSessionFile(s.id, s.project) : null;
-    if (found && found.format !== 'opencode' && found.format !== 'kiro' && fs.existsSync(found.file)) {
-      // Read timestamps from session file for accurate per-day breakdown
-      const msgsByDay = {};
-      const tsByDay = {};
+    if (found && found.format !== 'opencode' && found.format !== 'kiro' && found.format !== 'cursor' && fs.existsSync(found.file)) {
+      // Check disk cache for daily breakdown
+      let breakdown;
+      let dailyCacheKey = '';
       try {
-        const lines = readLines(found.file);
-        for (const line of lines) {
-          try {
-            const entry = JSON.parse(line);
-            // Detect user message across formats
-            let isUser = false;
-            let hasText = false;
-            let ts = 0;
-
-            if (found.format === 'claude') {
-              if (entry.type !== 'user') continue;
-              isUser = true;
-              if (entry.timestamp) ts = typeof entry.timestamp === 'number' ? entry.timestamp : new Date(entry.timestamp).getTime();
-              const c = entry.message && entry.message.content;
-              if (typeof c === 'string' && c.trim()) hasText = true;
-              else if (Array.isArray(c)) { for (const p of c) { if (p.type === 'text' && p.text && p.text.trim()) { hasText = true; break; } } }
-            } else if (found.format === 'cursor') {
-              if (entry.role !== 'user') continue;
-              isUser = true;
-              ts = s.first_ts; // Cursor has no per-message timestamps, use session time
-              const c = (entry.message || {}).content;
-              if (Array.isArray(c)) { for (const p of c) { if (p.type === 'text' && p.text && p.text.replace(/<\/?user_query>/g,'').trim()) { hasText = true; break; } } }
-              else if (typeof c === 'string' && c.trim()) hasText = true;
-            } else if (found.format === 'codex') {
-              if (entry.type === 'response_item' && entry.payload && entry.payload.role === 'user') {
-                isUser = true;
-                ts = s.first_ts;
-                const c = entry.payload.content;
-                if (Array.isArray(c)) { for (const p of c) { if ((p.text || '').trim()) { hasText = true; break; } } }
-              } else continue;
-            }
-
-            if (!isUser || !hasText) continue;
-            if (!ts || ts < 1000000000000) ts = s.first_ts;
-            const day = (found.format === 'claude' && ts) ? fmtLocalDay(ts) : (s.date || fmtLocalDay(s.last_ts));
-            msgsByDay[day] = (msgsByDay[day] || 0) + 1;
-            if (!tsByDay[day]) tsByDay[day] = { first: ts, last: ts };
-            if (ts < tsByDay[day].first) tsByDay[day].first = ts;
-            if (ts > tsByDay[day].last) tsByDay[day].last = ts;
-          } catch {}
-        }
+        const stat = fs.statSync(found.file);
+        dailyCacheKey = found.file + '|' + stat.mtimeMs + '|' + stat.size;
       } catch {}
+      if (dailyCacheKey && _dailyStatsDiskCache[dailyCacheKey]) {
+        breakdown = _dailyStatsDiskCache[dailyCacheKey];
+      } else {
+        breakdown = _computeSessionDailyBreakdown(s, found);
+        if (dailyCacheKey) _dailyStatsDiskCache[dailyCacheKey] = breakdown;
+      }
+      const { msgsByDay, tsByDay } = breakdown;
 
       const dayKeys = Object.keys(msgsByDay);
       if (dayKeys.length > 0) {
@@ -2722,6 +2821,7 @@ function getDailyStats(sessions) {
     d.hours = Math.round(d.hours * 10) / 10;
     d.cost = Math.round(d.cost * 100) / 100;
   }
+  _saveDailyStatsDiskCache();
   return Object.values(byDay).sort((a, b) => b.date.localeCompare(a.date));
 }
 
