@@ -460,7 +460,7 @@ function sendHeartbeat() {
     });
 
     const req = https.request({
-      hostname: 'codedash-leaderboard.valeriy.workers.dev',
+      hostname: 'leaderboard.neuraldeep.ru',
       path: '/api/heartbeat', method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
       timeout: 5000,
@@ -607,7 +607,7 @@ function saveGitHubProfile(profile) {
 }
 
 // ── Leaderboard Sync ──────────────────────
-const LEADERBOARD_API = 'https://codedash-leaderboard.valeriy.workers.dev';
+const LEADERBOARD_API = 'https://leaderboard.neuraldeep.ru';
 
 async function syncLeaderboard() {
   const profile = loadGitHubProfile();

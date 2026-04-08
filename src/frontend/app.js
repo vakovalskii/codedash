@@ -2906,7 +2906,7 @@ async function renderLeaderboard(container) {
     html += '</div>';
     html += '<div id="globalBoard"><div class="loading">Loading...</div></div>';
 
-    html += '<div class="lb-footer">Active days: ' + data.activeDays + ' | <a href="https://codedash-leaderboard.valeriy.workers.dev" target="_blank" style="color:var(--accent-blue)">View public leaderboard</a></div>';
+    html += '<div class="lb-footer">Active days: ' + data.activeDays + ' | <a href="https://leaderboard.neuraldeep.ru" target="_blank" style="color:var(--accent-blue)">View public leaderboard</a></div>';
     html += '</div>';
 
     container.innerHTML = html;
