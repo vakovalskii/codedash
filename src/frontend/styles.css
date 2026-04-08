@@ -2043,6 +2043,48 @@ body {
     text-align: center;
 }
 
+.lb-avatar-img {
+    width: 56px;
+    height: 56px;
+    border-radius: 50%;
+    border: 2px solid var(--accent-purple);
+    flex-shrink: 0;
+}
+
+.lb-username { font-size: 13px; color: var(--text-muted); }
+
+.lb-github-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 16px;
+    background: #24292e;
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    text-decoration: none;
+    transition: background 0.15s;
+    margin-left: auto;
+}
+.lb-github-btn:hover { background: #2f363d; }
+[data-theme="light"] .lb-github-btn { background: #24292e; color: #fff; }
+
+.lb-auth-code {
+    font-size: 32px;
+    font-weight: 700;
+    font-family: monospace;
+    letter-spacing: 4px;
+    padding: 16px;
+    background: var(--bg-card);
+    border: 2px dashed var(--accent-blue);
+    border-radius: 12px;
+    color: var(--accent-blue);
+    user-select: all;
+}
+
 /* ── Changelog ──────────────────────────────────────────────── */
 
 .changelog-container { padding: 20px; max-width: 700px; }
