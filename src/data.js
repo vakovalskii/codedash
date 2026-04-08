@@ -2238,6 +2238,11 @@ function getOrCreateAnonId() {
   return data;
 }
 
+const fmtLocalDay = (ts) => {
+  const d = new Date(ts);
+  return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+};
+
 function getDailyStats(sessions) {
   const byDay = {};
   const ensureDay = (date) => {
@@ -2247,49 +2252,80 @@ function getDailyStats(sessions) {
 
   for (const s of sessions) {
     if (!s.first_ts || !s.last_ts) continue;
-    const msgs = s.detail_messages || s.messages || 0;
-    const totalMs = Math.max(s.last_ts - s.first_ts, 0);
+    const tool = s.tool || 'unknown';
 
-    // Cost per session (computed once)
+    // Cost per session
     const costData = computeSessionCost(s.id, s.project);
     const sessionCost = (costData && costData.cost) || 0;
 
-    // Distribute across all days the session spans (local timezone)
-    const startDay = new Date(s.first_ts);
-    const endDay = new Date(s.last_ts);
-    const days = [];
-    const fmtDay = (d) => d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
-    const dt = new Date(startDay.getFullYear(), startDay.getMonth(), startDay.getDate());
-    const endDt = new Date(endDay.getFullYear(), endDay.getMonth(), endDay.getDate());
-    while (dt <= endDt) {
-      days.push(fmtDay(dt));
-      dt.setDate(dt.getDate() + 1);
-    }
-    if (days.length === 0) days.push(s.date || fmtDay(new Date(s.last_ts)));
+    // For sessions with detail files — read actual message timestamps
+    const found = s.has_detail ? findSessionFile(s.id, s.project) : null;
+    if (found && found.format === 'claude' && fs.existsSync(found.file)) {
+      // Read timestamps from session file for accurate per-day breakdown
+      const msgsByDay = {};
+      const tsByDay = {}; // track first/last ts per day for hours
+      try {
+        const lines = readLines(found.file);
+        for (const line of lines) {
+          try {
+            const entry = JSON.parse(line);
+            if (entry.type !== 'user' && entry.type !== 'assistant') continue;
+            let ts = 0;
+            if (entry.timestamp) {
+              ts = typeof entry.timestamp === 'number' ? entry.timestamp : new Date(entry.timestamp).getTime();
+            }
+            if (!ts || ts < 1000000000000) continue; // skip invalid
+            const day = fmtLocalDay(ts);
+            msgsByDay[day] = (msgsByDay[day] || 0) + 1;
+            if (!tsByDay[day]) tsByDay[day] = { first: ts, last: ts };
+            if (ts < tsByDay[day].first) tsByDay[day].first = ts;
+            if (ts > tsByDay[day].last) tsByDay[day].last = ts;
+          } catch {}
+        }
+      } catch {}
 
-    const numDays = days.length;
-    const msgsPerDay = Math.ceil(msgs / numDays);
-    const hoursPerDay = (totalMs / 3600000) / numDays;
-    // Cap hours at 16h/day max (can't code more than that)
-    const cappedHours = Math.min(hoursPerDay, 16);
-    const costPerDay = sessionCost / numDays;
-    const tool = s.tool || 'unknown';
-
-    for (const day of days) {
-      const d = ensureDay(day);
-      d.sessions++;
-      d.messages += msgsPerDay;
-      d.hours += cappedHours;
-      d.cost += costPerDay;
-      d.agents[tool] = (d.agents[tool] || 0) + 1;
+      const dayKeys = Object.keys(msgsByDay);
+      if (dayKeys.length > 0) {
+        const totalMsgs = dayKeys.reduce((a, k) => a + msgsByDay[k], 0) || 1;
+        for (const day of dayKeys) {
+          const d = ensureDay(day);
+          d.sessions++;
+          d.messages += msgsByDay[day];
+          const dayHours = tsByDay[day] ? Math.min((tsByDay[day].last - tsByDay[day].first) / 3600000, 16) : 0;
+          d.hours += dayHours;
+          d.cost += sessionCost * (msgsByDay[day] / totalMsgs); // cost proportional to messages
+          d.agents[tool] = (d.agents[tool] || 0) + 1;
+        }
+        continue; // done with this session
+      }
     }
+
+    // Fallback for non-Claude or sessions without detail: single-day attribution
+    const day = s.date || fmtLocalDay(s.last_ts);
+    const d = ensureDay(day);
+    d.sessions++;
+    d.messages += (s.detail_messages || s.messages || 0);
+    d.hours += Math.min((s.last_ts - s.first_ts) / 3600000, 16);
+    d.cost += sessionCost;
+    d.agents[tool] = (d.agents[tool] || 0) + 1;
   }
-  // Round hours to 1 decimal
-  for (const d of Object.values(byDay)) d.hours = Math.round(d.hours * 10) / 10;
+
+  // Round
+  for (const d of Object.values(byDay)) {
+    d.hours = Math.round(d.hours * 10) / 10;
+    d.cost = Math.round(d.cost * 100) / 100;
+  }
   return Object.values(byDay).sort((a, b) => b.date.localeCompare(a.date));
 }
 
+let _lbCache = null;
+let _lbCacheTs = 0;
+const LB_CACHE_TTL = 60000; // 60 seconds
+
 function getLeaderboardStats() {
+  const now = Date.now();
+  if (_lbCache && (now - _lbCacheTs) < LB_CACHE_TTL) return _lbCache;
+
   const sessions = loadSessions();
   const anon = getOrCreateAnonId();
   const daily = getDailyStats(sessions);
@@ -2323,7 +2359,7 @@ function getLeaderboardStats() {
     }
   }
 
-  return {
+  const result = {
     anon,
     today: todayStats,
     totals: { sessions: totalSessions, messages: totalMessages, hours: Math.round(totalHours * 10) / 10, cost: Math.round(totalCost * 100) / 100 },
@@ -2332,6 +2368,9 @@ function getLeaderboardStats() {
     daily: daily.slice(0, 30), // last 30 days
     activeDays: daily.length,
   };
+  _lbCache = result;
+  _lbCacheTs = Date.now();
+  return result;
 }
 
 module.exports = {
