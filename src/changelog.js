@@ -2,15 +2,15 @@
 
 const CHANGELOG = [
   {
-    version: '6.14.4',
+    version: '6.14.5',
     date: '2026-04-08',
-    title: 'Cursor: full session scan + progressive loading',
+    title: 'Cursor sessions + 11x faster loading',
     changes: [
-      'Scan Cursor sessions from globalStorage state.vscdb (composerData + bubbleId)',
-      'Progressive loading: fast sessions first, Cursor vscdb loads in background',
-      'Workspace-to-project mapping with disk cache (10 min TTL)',
-      'Cross-platform Cursor paths (macOS / Linux / Windows)',
-      'Markdown export support for Cursor, OpenCode, Kiro sessions',
+      'Scan 400+ Cursor sessions from globalStorage state.vscdb',
+      'Progressive loading: fast sessions first, Cursor vscdb in background',
+      'Disk cache for parsed sessions, git roots, workspace mapping',
+      'Session file index eliminates 15K+ filesystem calls',
+      'Cold start 5.6s→2.2s, warm start 5.6s→0.5s',
     ],
   },
   {
