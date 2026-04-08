@@ -550,7 +550,7 @@ async function githubPollToken(deviceCode) {
 function loadGitHubProfile() {
   try {
     const data = JSON.parse(fs.readFileSync(GITHUB_PROFILE_FILE, 'utf8'));
-    if (data.authenticated) return { authenticated: true, username: data.username, avatar: data.avatar, name: data.name, url: data.url };
+    if (data.authenticated) return { authenticated: true, username: data.username, avatar: data.avatar, name: data.name, url: data.url, token: data.token };
   } catch {}
   return null;
 }
