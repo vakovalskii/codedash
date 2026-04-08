@@ -1205,7 +1205,40 @@ function getProjectGitInfo(projectPath) {
 
 let _sessionsCache = null;
 let _sessionsCacheTs = 0;
-const SESSIONS_CACHE_TTL = 10000; // 10 seconds
+const SESSIONS_CACHE_TTL = 60000; // 60 seconds — hot cache, invalidated by file changes
+
+// Track file mtimes for smart invalidation
+let _historyMtime = 0;
+let _historySize = 0;
+let _projectsDirMtime = 0;
+
+function _sessionsNeedRescan() {
+  // Check if history.jsonl or projects dir changed since last scan
+  try {
+    if (fs.existsSync(HISTORY_FILE)) {
+      const st = fs.statSync(HISTORY_FILE);
+      if (st.mtimeMs !== _historyMtime || st.size !== _historySize) return true;
+    }
+    if (fs.existsSync(PROJECTS_DIR)) {
+      const st = fs.statSync(PROJECTS_DIR);
+      if (st.mtimeMs !== _projectsDirMtime) return true;
+    }
+  } catch {}
+  return false;
+}
+
+function _updateScanMarkers() {
+  try {
+    if (fs.existsSync(HISTORY_FILE)) {
+      const st = fs.statSync(HISTORY_FILE);
+      _historyMtime = st.mtimeMs;
+      _historySize = st.size;
+    }
+    if (fs.existsSync(PROJECTS_DIR)) {
+      _projectsDirMtime = fs.statSync(PROJECTS_DIR).mtimeMs;
+    }
+  } catch {}
+}
 
 // Progressive loading: cursor vscdb sessions load in background
 let _cursorVscdbSessions = null;
@@ -1340,8 +1373,14 @@ function _loadCursorVscdbInBackground() {
 
 function loadSessions() {
   const now = Date.now();
-  if (_sessionsCache && (now - _sessionsCacheTs) < SESSIONS_CACHE_TTL) {
-    return _sessionsCache;
+  if (_sessionsCache) {
+    // Hot cache: return immediately if within TTL and no file changes
+    if ((now - _sessionsCacheTs) < SESSIONS_CACHE_TTL) return _sessionsCache;
+    // Extended cache: even after TTL, only rescan if files actually changed
+    if (!_sessionsNeedRescan()) {
+      _sessionsCacheTs = now; // extend TTL
+      return _sessionsCache;
+    }
   }
   const sessions = {};
 
@@ -1594,6 +1633,7 @@ function loadSessions() {
   // Flush disk caches
   _saveParsedDiskCache();
   _saveGitRootDiskCache();
+  _updateScanMarkers();
 
   _sessionsCache = result;
   _sessionsCacheTs = Date.now();
@@ -1812,7 +1852,7 @@ function exportSessionMarkdown(sessionId, project) {
 // Session file index: sessionId -> file path (built once, avoids O(sessions*projects) scans)
 let _sessionFileIndex = null;
 let _sessionFileIndexTs = 0;
-const SESSION_FILE_INDEX_TTL = 30000; // 30 seconds
+const SESSION_FILE_INDEX_TTL = 120000; // 2 minutes — dirs rarely change
 
 function _buildSessionFileIndex() {
   const now = Date.now();
