@@ -2657,7 +2657,7 @@ async function renderLeaderboard(container) {
     // Today stats
     html += '<div class="lb-section-title">Today</div>';
     html += '<div class="lb-stats-grid">';
-    html += '<div class="lb-stat"><div class="lb-stat-value">' + data.today.messages + '</div><div class="lb-stat-label">messages</div></div>';
+    html += '<div class="lb-stat"><div class="lb-stat-value">' + data.today.messages + '</div><div class="lb-stat-label">prompts</div></div>';
     html += '<div class="lb-stat"><div class="lb-stat-value">' + data.today.hours.toFixed(1) + 'h</div><div class="lb-stat-label">agent time</div></div>';
     html += '<div class="lb-stat"><div class="lb-stat-value">' + data.today.sessions + '</div><div class="lb-stat-label">sessions</div></div>';
     html += '<div class="lb-stat"><div class="lb-stat-value">$' + data.today.cost.toFixed(2) + '</div><div class="lb-stat-label">cost</div></div>';
@@ -2666,7 +2666,7 @@ async function renderLeaderboard(container) {
     // All time
     html += '<div class="lb-section-title">All Time</div>';
     html += '<div class="lb-stats-grid">';
-    html += '<div class="lb-stat"><div class="lb-stat-value">' + data.totals.messages.toLocaleString() + '</div><div class="lb-stat-label">messages</div></div>';
+    html += '<div class="lb-stat"><div class="lb-stat-value">' + data.totals.messages.toLocaleString() + '</div><div class="lb-stat-label">prompts</div></div>';
     html += '<div class="lb-stat"><div class="lb-stat-value">' + data.totals.hours.toFixed(0) + 'h</div><div class="lb-stat-label">agent time</div></div>';
     html += '<div class="lb-stat"><div class="lb-stat-value">' + data.totals.sessions + '</div><div class="lb-stat-label">sessions</div></div>';
     html += '<div class="lb-stat"><div class="lb-stat-value">$' + data.totals.cost.toFixed(2) + '</div><div class="lb-stat-label">cost</div></div>';

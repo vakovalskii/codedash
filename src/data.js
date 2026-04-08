@@ -2274,9 +2274,9 @@ function getDailyStats(sessions) {
             if (entry.timestamp) {
               ts = typeof entry.timestamp === 'number' ? entry.timestamp : new Date(entry.timestamp).getTime();
             }
-            if (!ts || ts < 1000000000000) continue; // skip invalid
+            if (!ts || ts < 1000000000000) continue;
             const day = fmtLocalDay(ts);
-            msgsByDay[day] = (msgsByDay[day] || 0) + 1;
+            if (entry.type === 'user') msgsByDay[day] = (msgsByDay[day] || 0) + 1;
             if (!tsByDay[day]) tsByDay[day] = { first: ts, last: ts };
             if (ts < tsByDay[day].first) tsByDay[day].first = ts;
             if (ts > tsByDay[day].last) tsByDay[day].last = ts;
