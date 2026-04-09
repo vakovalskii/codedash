@@ -1409,7 +1409,11 @@ function renderRunningCard(a, s) {
   html += '</div>';
   if (s && s.first_message) html += '<div class="running-msg">' + escHtml(s.first_message.slice(0, 120)) + '</div>';
   html += '<div class="running-actions">';
-  html += '<button class="launch-btn" style="background:var(--accent-green);color:#000" onclick="focusSession(\'' + sid + '\')">Focus</button>';
+  if (a._focusUnsupported) {
+    html += '<button class="launch-btn btn-secondary" disabled title="Focus is not available for this runtime">Focus</button>';
+  } else {
+    html += '<button class="launch-btn" style="background:var(--accent-green);color:#000" onclick="focusSession(\'' + sid + '\')">Focus</button>';
+  }
   if (s) {
     html += '<button class="launch-btn btn-secondary" onclick="var ss=allSessions.find(function(x){return x.id===\'' + sid + '\'});if(ss)openDetail(ss);">Details</button>';
     html += '<button class="launch-btn btn-secondary" onclick="closeDetail();openReplay(\'' + sid + '\',\'' + escHtml((s.project || '').replace(/'/g, "\\'")) + '\')">Replay</button>';
