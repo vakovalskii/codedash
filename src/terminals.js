@@ -196,7 +196,9 @@ function openInTerminal(sessionId, tool, flags, projectDir, terminalId) {
   const skipPerms = flags.includes('skip-permissions');
   let cmd;
 
-  if (tool === 'codex') {
+  if (tool === 'droid') {
+    cmd = `droid --resume ${sessionId}`;
+  } else if (tool === 'codex') {
     cmd = `codex resume ${sessionId}`;
   } else if (tool === 'kilo') {
     cmd = `kilo resume ${sessionId}`;

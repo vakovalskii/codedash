@@ -299,6 +299,7 @@ body {
 .tool-chip:hover { color: var(--text-primary); }
 .tool-chip.active-claude { background: rgba(96, 165, 250, 0.2); border-color: var(--accent-blue); color: var(--accent-blue); }
 .tool-chip.active-codex { background: rgba(34, 211, 238, 0.2); border-color: var(--accent-cyan); color: var(--accent-cyan); }
+.tool-chip.active-droid { background: rgba(74, 222, 128, 0.2); border-color: var(--accent-green); color: var(--accent-green); }
 
 .stats { color: var(--text-muted); font-size: 13px; white-space: nowrap; }
 
@@ -1204,6 +1205,11 @@ body {
 .tool-kilo {
     background: rgba(52, 211, 153, 0.15);
     color: #34d399;
+}
+
+.tool-droid {
+    background: rgba(74, 222, 128, 0.15);
+    color: var(--accent-green);
 }
 
 /* ── MCP / Skill badges ──────────────────────────────────────── */
