@@ -72,7 +72,7 @@ async function renderAnalytics(container) {
         coverageparts.push(byAgent['opencode'].estimated
           ? '<span class="coverage-est">OpenCode ~est.</span>'
           : '<span class="coverage-ok">OpenCode \u2713</span>');
-      ['cursor', 'kiro'].forEach(function(a) {
+      ['cursor', 'kiro', 'copilot'].forEach(function(a) {
         if (noCost[a] > 0)
           coverageparts.push('<span class="coverage-none">' + a + ' \u2717 (no token data)</span>');
       });
@@ -222,7 +222,7 @@ async function renderAnalytics(container) {
       agentEntries.forEach(function(entry) {
         var name = entry[0]; var info = entry[1];
         var pct = maxAgentCost > 0 ? (info.cost / maxAgentCost * 100) : 0;
-        var label = { 'claude': 'Claude Code', 'claude-ext': 'Claude Ext', 'codex': 'Codex', 'opencode': 'OpenCode', 'cursor': 'Cursor', 'kiro': 'Kiro' }[name] || name;
+        var label = { 'claude': 'Claude Code', 'claude-ext': 'Claude Ext', 'codex': 'Codex', 'opencode': 'OpenCode', 'cursor': 'Cursor', 'kiro': 'Kiro', 'copilot': 'GitHub Copilot' }[name] || name;
         var estMark = info.estimated ? ' <span style="font-size:10px;opacity:0.6">~est.</span>' : '';
         html += '<div class="hbar-row">';
         html += '<span class="hbar-name">' + label + estMark + '</span>';

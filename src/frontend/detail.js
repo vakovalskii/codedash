@@ -67,6 +67,8 @@ async function openDetail(s) {
   // Tool-specific launch buttons
   if (s.tool === 'cursor') {
     infoHtml += '<button class="launch-btn" style="background:#4a9eff" onclick="openInCursor(\'' + escHtml(s.project || '') + '\')">Open in Cursor</button>';
+  } else if (s.tool === 'copilot') {
+    infoHtml += '<button class="launch-btn" style="background:#3fb950;color:#000" onclick="openInVSCode(\'' + escHtml(s.project || '') + '\')">Open in VS Code</button>';
   } else if (activeSessions[s.id]) {
     infoHtml += '<button class="launch-btn" style="background:var(--accent-green);color:#000" onclick="focusSession(\'' + s.id + '\')">Focus Terminal</button>';
   } else {
@@ -79,8 +81,10 @@ async function openDetail(s) {
   if (s.has_detail) {
     infoHtml += '<button class="launch-btn btn-secondary" onclick="closeDetail();openReplay(\'' + s.id + '\',\'' + escHtml(s.project || '') + '\')">Replay</button>';
     infoHtml += '<button class="launch-btn btn-secondary" onclick="exportMd(\'' + s.id + '\',\'' + escHtml(s.project || '') + '\')">Export MD</button>';
-    var convertTarget = s.tool === 'codex' ? 'claude' : 'codex';
-    infoHtml += '<button class="launch-btn btn-secondary" onclick="convertTo(\'' + s.id + '\',\'' + escHtml(s.project || '') + '\',\'' + convertTarget + '\')">Convert to ' + convertTarget + '</button>';
+    if (s.tool === 'claude' || s.tool === 'claude-ext' || s.tool === 'codex') {
+      var convertTarget = s.tool === 'codex' ? 'claude' : 'codex';
+      infoHtml += '<button class="launch-btn btn-secondary" onclick="convertTo(\'' + s.id + '\',\'' + escHtml(s.project || '') + '\',\'' + convertTarget + '\')">Convert to ' + convertTarget + '</button>';
+    }
     infoHtml += '<button class="launch-btn btn-secondary" onclick="downloadHandoff(\'' + s.id + '\',\'' + escHtml(s.project || '') + '\')">Handoff</button>';
   }
   infoHtml += '<button class="star-btn detail-star' + (isStarred ? ' active' : '') + '" onclick="toggleStar(\'' + s.id + '\')">&#9733; ' + (isStarred ? 'Starred' : 'Star') + '</button>';
@@ -281,6 +285,8 @@ function copyResume(sessionId, tool) {
     cmd = 'codex resume ' + sessionId;
   } else if (tool === 'cursor') {
     cmd = 'cursor ' + (s && s.project ? '"' + s.project + '"' : '.');
+  } else if (tool === 'copilot') {
+    cmd = 'code ' + (s && s.project ? '"' + s.project + '"' : '.');
   } else {
     cmd = 'claude --resume ' + sessionId;
   }
