@@ -564,8 +564,8 @@ function startServer(host, port, openBrowser = true) {
     // ── Full-text search ──────────────────────
     else if (req.method === 'GET' && pathname === '/api/search') {
       const q = parsed.searchParams.get('q') || '';
-      // Uses SQLite FTS5 index directly — no loadSessions needed
-      const results = searchFullText(q, []);
+      // Prefer the SQLite FTS5 index, but provide sessions so in-memory fallback can work
+      const results = searchFullText(q, loadSessions());
       json(res, results);
     }
 
