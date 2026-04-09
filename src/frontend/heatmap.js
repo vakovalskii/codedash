@@ -11,10 +11,16 @@ function renderHeatmap(container) {
   var now = new Date();
   var oneYearAgo = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate());
 
-  // Count sessions per day + by tool
+  // Dedupe sessions into conversation groups so retry/resume chains count
+  // as ONE session. Otherwise a `codex exec` loop looks like 1000 sessions
+  // in a single day. Uses the shared helper from app.js.
+  var dedupedGroups = groupSessionsByConversation(allSessions);
+  var dedupedSessions = dedupedGroups.map(function(g) { return g.representative; });
+
+  // Count sessions per day + by tool (deduped)
   var counts = {};
   var toolCounts = {};
-  allSessions.forEach(function(s) {
+  dedupedSessions.forEach(function(s) {
     var d = s.date;
     if (!d) return;
     counts[d] = (counts[d] || 0) + 1;

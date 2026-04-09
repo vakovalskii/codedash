@@ -575,6 +575,19 @@ body {
     color: var(--accent-green);
     white-space: nowrap;
 }
+.group-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    padding: 2px 7px;
+    border-radius: 10px;
+    font-size: 10px;
+    font-weight: 600;
+    background: rgba(168,85,247,0.18);
+    color: #c084fc;
+    white-space: nowrap;
+    cursor: help;
+}
 [data-theme="light"] .cost-badge {
     background: rgba(52,199,89,0.12);
 }
@@ -2470,6 +2483,104 @@ body {
     line-height: 1.6;
     white-space: pre-wrap;
     word-break: break-word;
+}
+
+/* ── Analytics live banner + progress ───────────────────────── */
+
+.analytics-live-banner {
+    background: linear-gradient(90deg, rgba(96,165,250,0.12), rgba(96,165,250,0.04));
+    border: 1px solid rgba(96,165,250,0.35);
+    border-radius: 6px;
+    padding: 10px 14px;
+    margin: 0 20px 16px;
+}
+.analytics-live-banner .alb-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 4px;
+}
+.analytics-live-banner .alb-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--accent-blue, #60a5fa);
+    flex: 1;
+}
+.analytics-live-banner .alb-elapsed {
+    font-size: 12px;
+    color: var(--text-secondary, #aaa);
+    font-variant-numeric: tabular-nums;
+}
+.analytics-live-banner .alb-phase {
+    font-size: 11px;
+    color: var(--text-secondary, #aaa);
+    margin-bottom: 8px;
+    font-variant-numeric: tabular-nums;
+}
+.analytics-live-banner .alb-pulse {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #60a5fa;
+    box-shadow: 0 0 0 0 rgba(96,165,250,0.7);
+    animation: alb-pulse 1.5s infinite;
+}
+@keyframes alb-pulse {
+    0%   { box-shadow: 0 0 0 0 rgba(96,165,250,0.7); }
+    70%  { box-shadow: 0 0 0 8px rgba(96,165,250,0); }
+    100% { box-shadow: 0 0 0 0 rgba(96,165,250,0); }
+}
+.analytics-live-banner .progress-bar-outer {
+    width: 100%;
+    height: 6px;
+    background: rgba(255,255,255,0.06);
+    border-radius: 3px;
+    overflow: hidden;
+}
+.analytics-live-banner .progress-bar-inner {
+    height: 100%;
+    background: linear-gradient(90deg, var(--accent-blue, #60a5fa), #3b82f6);
+    transition: width 0.5s ease-out;
+}
+
+.analytics-progress {
+    max-width: 520px;
+    margin: 60px auto;
+    padding: 28px 32px;
+    border: 1px solid var(--border-color, #333);
+    border-radius: 8px;
+    background: var(--panel-bg, #1a1a1a);
+    text-align: center;
+}
+.analytics-progress .progress-title {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text-primary, #eee);
+    margin-bottom: 8px;
+}
+.analytics-progress .progress-phase {
+    font-size: 13px;
+    color: var(--text-secondary, #aaa);
+    margin-bottom: 16px;
+    font-variant-numeric: tabular-nums;
+}
+.analytics-progress .progress-bar-outer {
+    width: 100%;
+    height: 8px;
+    background: rgba(255,255,255,0.06);
+    border-radius: 4px;
+    overflow: hidden;
+    margin-bottom: 12px;
+}
+.analytics-progress .progress-bar-inner {
+    height: 100%;
+    background: linear-gradient(90deg, var(--accent-blue, #60a5fa), var(--accent-blue, #3b82f6));
+    transition: width 0.4s ease-out;
+}
+.analytics-progress .progress-subtle {
+    font-size: 11px;
+    color: var(--text-muted, #777);
 }
 
 /* ── Cost Analytics ─────────────────────────────────────────── */

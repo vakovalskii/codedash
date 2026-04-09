@@ -82,10 +82,17 @@ async function renderCloud(container) {
   html += '<div style="' + panelStyle + '">';
 
   if (cloudLocalSessions) {
-    for (var i = 0; i < cloudLocalSessions.length; i++) {
-      var ls = cloudLocalSessions[i];
+    // Dedupe near-duplicate conversations via the shared helper — same
+    // logic as Timeline, All Sessions etc.
+    var _groups = groupSessionsByConversation(cloudLocalSessions);
+    for (var i = 0; i < _groups.length; i++) {
+      var g = _groups[i];
+      var ls = g.representative;
+      var extra = g.members.length - 1;
       var inCloud = cloudSessionIds.has(ls.id);
-      var sub = (ls.project_short || '') + ' \u00b7 ' + (ls.messages || 0) + ' msgs';
+      var subParts = [(ls.project_short || ''), (ls.messages || 0) + ' msgs'];
+      if (extra > 0) subParts.push('+' + extra + ' more (' + g.total_msgs + ' total)');
+      var sub = subParts.join(' \u00b7 ');
       var btnHtml = inCloud
         ? '<span class="dim" style="font-size:10px;white-space:nowrap;">in cloud</span>'
         : '<button class="launch-btn btn-primary" style="padding:3px 8px;font-size:10px;" onclick="cloudPushOne(\'' + ls.id + '\',this)">Push</button>';

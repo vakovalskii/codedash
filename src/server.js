@@ -3,20 +3,299 @@ const http = require('http');
 const https = require('https');
 const { URL } = require('url');
 const { exec } = require('child_process');
-const { loadSessions, loadSessionDetail, deleteSession, getGitCommits, exportSessionMarkdown, getSessionPreview, searchFullText, getActiveSessions, getSessionReplay, getCostAnalytics, computeSessionCost, getProjectGitInfo, getLeaderboardStats } = require('./data');
+const { loadSessions, loadSessionsAsync, getWarmingStatus, getSqliteBackfillStatus, createCostAggregator, computeSessionCostForAnalytics, buildOpencodeCostCache, loadSessionDetail, deleteSession, getGitCommits, exportSessionMarkdown, getSessionPreview, searchFullText, getActiveSessions, getSessionReplay, getCostAnalytics, computeSessionCost, getProjectGitInfo, getLeaderboardStats } = require('./data');
+const sqliteIndex = require('./sqlite-index');
 const { detectTerminals, openInTerminal, focusTerminalByPid } = require('./terminals');
 const { convertSession } = require('./convert');
 const { generateHandoff } = require('./handoff');
 const { CHANGELOG } = require('./changelog');
 const { getHTML } = require('./html');
 
+// ── Background jobs for long-running stats ────────────────
+// Analytics and leaderboard run as async tasks that publish live partial
+// results. The HTTP endpoint returns progress + partial snapshot so the UI
+// can show numbers climbing in real time instead of a blank loading screen.
+const _jobs = {
+  analytics: null,
+  leaderboard: null,
+};
+
+// Fingerprint for persistent cache lookup. Quantized to 5-min buckets so
+// that codex sessions appending their files every second don't invalidate
+// the cache on every request.
+function _analyticsFingerprint(sessions, filterFrom, filterTo, extra) {
+  let maxTs = 0;
+  for (const s of sessions) if (s.last_ts > maxTs) maxTs = s.last_ts;
+  const bucket = Math.floor(maxTs / (5 * 60000));
+  return [sessions.length, bucket, filterFrom || '', filterTo || '', extra || ''].join('|');
+}
+
+async function _runAnalyticsJob(filterFrom, filterTo, includeHelpers) {
+  const key = (filterFrom || '') + '|' + (filterTo || '') + '|h' + (includeHelpers ? '1' : '0');
+  const job = {
+    state: 'running',
+    progress: { done: 0, total: 0, phase: 'scanning files' },
+    result: null, partialResult: null, error: null, key,
+    startedAt: Date.now(), finishedAt: 0,
+  };
+  _jobs.analytics = job;
+  try {
+    let sessions = await loadSessionsAsync((p) => {
+      job.progress = { done: p.done || 0, total: p.total || 0, phase: p.phase || 'parsing' };
+    });
+    if (!includeHelpers) sessions = sessions.filter(s => !s.is_helper);
+    if (filterFrom) sessions = sessions.filter(s => s.date >= filterFrom);
+    if (filterTo) sessions = sessions.filter(s => s.date <= filterTo);
+
+    const fingerprint = _analyticsFingerprint(sessions, filterFrom, filterTo, includeHelpers ? 'h1' : 'h0');
+    try {
+      const cached = await sqliteIndex.getAggregateCacheAsync('analytics', fingerprint);
+      if (cached && cached.result) {
+        job.result = cached.result;
+        job.state = 'done';
+        job.finishedAt = Date.now();
+        log('JOB', `analytics served from cache`);
+        return;
+      }
+    } catch (e) { log('WARN', 'analytics cache read failed: ' + e.message); }
+
+    job.progress.phase = 'opencode batch query';
+    const opencodeCostCache = buildOpencodeCostCache(sessions);
+
+    job.progress = { done: 0, total: sessions.length, phase: 'aggregating' };
+    const agg = createCostAggregator();
+    const CHUNK = 50;
+    for (let i = 0; i < sessions.length; i += CHUNK) {
+      const slice = sessions.slice(i, i + CHUNK);
+      for (const s of slice) {
+        try {
+          const cost = computeSessionCostForAnalytics(s, opencodeCostCache);
+          agg.merge(s, cost);
+        } catch {}
+      }
+      job.progress.done = Math.min(i + CHUNK, sessions.length);
+      try { job.partialResult = agg.finalize(); } catch {}
+      await new Promise(r => setImmediate(r));
+    }
+
+    job.result = agg.finalize();
+    job.partialResult = null;
+    job.state = 'done';
+    job.finishedAt = Date.now();
+    log('JOB', `analytics done in ${job.finishedAt - job.startedAt}ms (${sessions.length} sessions)`);
+    try { await sqliteIndex.setAggregateCache('analytics', fingerprint, job.result); } catch {}
+  } catch (e) {
+    job.state = 'error';
+    job.error = e.message || String(e);
+    job.finishedAt = Date.now();
+    log('ERROR', `analytics job failed: ${job.error}`);
+  }
+}
+
+async function _runLeaderboardJob(includeHelpers) {
+  const job = {
+    state: 'running',
+    progress: { done: 0, total: 0, phase: 'scanning files' },
+    result: null, partialResult: null, error: null, key: 'lb|h' + (includeHelpers ? '1' : '0'),
+    startedAt: Date.now(), finishedAt: 0,
+  };
+  _jobs.leaderboard = job;
+  try {
+    let sessions = await loadSessionsAsync((p) => {
+      job.progress = { done: p.done || 0, total: p.total || 0, phase: p.phase || 'parsing' };
+    });
+    if (!includeHelpers) sessions = sessions.filter(s => !s.is_helper);
+    // Dedupe to conversation groups. Strategy:
+    //   - count of sessions = unique groups (612)
+    //   - msgs/hours = sum over REPRESENTATIVES only (avoids counting
+    //     agent→agent turns from 900 retries of the same prompt)
+    //   - cost = sum over ALL sessions (real money actually spent)
+    // The representative is the session with the MOST user_messages
+    // within the group (so we keep the "fullest" run).
+    const groupMap = new Map();
+    const allRollouts = sessions; // keep for cost sum
+    for (const s of sessions) {
+      const k = s.group_key || s.id;
+      const existing = groupMap.get(k);
+      if (!existing || (s.user_messages || 0) > (existing.user_messages || 0)) {
+        groupMap.set(k, s);
+      }
+    }
+    const representatives = Array.from(groupMap.values());
+    const uniqueSessionCount = representatives.length;
+    sessions = representatives; // the per-session loop iterates representatives
+    const fingerprint = _analyticsFingerprint(sessions, '', '', includeHelpers ? 'h1' : 'h0');
+    try {
+      const cached = await sqliteIndex.getAggregateCacheAsync('leaderboard', fingerprint);
+      if (cached && cached.result) {
+        job.result = cached.result;
+        job.state = 'done';
+        job.finishedAt = Date.now();
+        log('JOB', 'leaderboard served from cache');
+        return;
+      }
+    } catch {}
+
+    const opencodeCostCache = buildOpencodeCostCache(allRollouts);
+
+    // Real cost = sum over ALL rollouts (not deduped). Real money spent.
+    let realTotalCost = 0;
+    for (const s of allRollouts) {
+      try { realTotalCost += computeSessionCostForAnalytics(s, opencodeCostCache).cost || 0; } catch {}
+    }
+
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const fmtDay = (ts) => {
+      const d = new Date(ts);
+      return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+    };
+    const byDay = {};
+    const ensureDay = (date) => {
+      if (!byDay[date]) byDay[date] = { date, sessions: 0, messages: 0, hours: 0, cost: 0, agents: {} };
+      return byDay[date];
+    };
+    let totalMessages = 0, totalHours = 0, totalCost = 0;
+    const agentTotals = {};
+
+    job.progress = { done: 0, total: sessions.length, phase: 'aggregating' };
+    const CHUNK = 50;
+    for (let i = 0; i < sessions.length; i += CHUNK) {
+      const slice = sessions.slice(i, i + CHUNK);
+      for (const s of slice) {
+        try {
+          if (!s.first_ts || !s.last_ts) continue;
+          const tool = s.tool || 'unknown';
+          const cost = computeSessionCostForAnalytics(s, opencodeCostCache).cost || 0;
+          const day = s.date || fmtDay(s.last_ts);
+          const d = ensureDay(day);
+          d.sessions++;
+          // Only count EXACT user_messages (parsed from JSONL). Sessions
+          // without parsed metadata yet contribute 0 — numbers grow as the
+          // background warmer finishes. This avoids the msgs*0.5 estimate
+          // that massively inflates totals on Claude (tool_results) and on
+          // partially-parsed runs.
+          const msgs = s.user_messages > 0 ? s.user_messages : 0;
+          d.messages += msgs;
+          d.hours += Math.min((s.last_ts - s.first_ts) / 3600000, 16);
+          d.cost += cost;
+          d.agents[tool] = (d.agents[tool] || 0) + 1;
+          totalMessages += msgs;
+          totalHours += Math.min((s.last_ts - s.first_ts) / 3600000, 16);
+          totalCost += cost;
+          agentTotals[tool] = (agentTotals[tool] || 0) + 1;
+        } catch {}
+      }
+      job.progress.done = Math.min(i + CHUNK, sessions.length);
+      try {
+        const daily = Object.values(byDay).sort((a, b) => b.date.localeCompare(a.date));
+        let streak = 0;
+        const dt = new Date();
+        for (let k = 0; k < 365; k++) {
+          const d2 = dt.toISOString().slice(0, 10);
+          if (byDay[d2]) { streak++; dt.setDate(dt.getDate() - 1); } else break;
+        }
+        job.partialResult = {
+          anon: { id: '', name: 'You' },
+          today: byDay[todayStr] || { sessions: 0, messages: 0, hours: 0, cost: 0, agents: {} },
+          totals: {
+            sessions: uniqueSessionCount,
+            messages: totalMessages,
+            hours: Math.round(totalHours * 10) / 10,
+            cost: Math.round(realTotalCost * 100) / 100,
+          },
+          agents: agentTotals,
+          streak,
+          daily: daily.slice(0, 30),
+          activeDays: daily.length,
+        };
+      } catch {}
+      await new Promise(r => setImmediate(r));
+    }
+
+    let anon = { id: '', name: 'anon' };
+    try {
+      const { getOrCreateAnonId } = require('./data');
+      anon = getOrCreateAnonId();
+    } catch {}
+    const daily = Object.values(byDay).sort((a, b) => b.date.localeCompare(a.date));
+    let streak = 0;
+    const dt = new Date();
+    for (let k = 0; k < 365; k++) {
+      const d2 = dt.toISOString().slice(0, 10);
+      if (byDay[d2]) { streak++; dt.setDate(dt.getDate() - 1); } else break;
+    }
+    job.result = {
+      anon,
+      today: byDay[todayStr] || { sessions: 0, messages: 0, hours: 0, cost: 0, agents: {} },
+      totals: {
+        sessions: uniqueSessionCount,
+        messages: totalMessages,
+        hours: Math.round(totalHours * 10) / 10,
+        cost: Math.round(realTotalCost * 100) / 100,
+      },
+      agents: agentTotals,
+      streak,
+      daily: daily.slice(0, 30),
+      activeDays: daily.length,
+    };
+    job.partialResult = null;
+    job.state = 'done';
+    job.finishedAt = Date.now();
+    log('JOB', `leaderboard done in ${job.finishedAt - job.startedAt}ms (${sessions.length} sessions)`);
+    try { await sqliteIndex.setAggregateCache('leaderboard', fingerprint, job.result); } catch {}
+  } catch (e) {
+    job.state = 'error';
+    job.error = e.message || String(e);
+    job.finishedAt = Date.now();
+    log('ERROR', `leaderboard job failed: ${job.error}`);
+  }
+}
+
+function _jobResponse(job) {
+  if (!job) return { status: 'idle' };
+  if (job.state === 'done') {
+    return { status: 'done', result: job.result, ms: job.finishedAt - job.startedAt };
+  }
+  if (job.state === 'error') {
+    return { status: 'error', error: job.error };
+  }
+  return {
+    status: 'running',
+    progress: job.progress,
+    partialResult: job.partialResult || null,
+    elapsedMs: Date.now() - job.startedAt,
+  };
+}
+
 // ── Logging ──────────────────────────────────
-const LOG_VERBOSE = process.env.CODEDASH_LOG !== '0';
+// CODEDASH_LOG=0 (default) → quiet stdout (only ERROR/WARN/JOB), full log to
+// ~/.codedash/logs/server.log. CODEDASH_LOG=1 → verbose stdout mirror.
+const fs_log = require('fs');
+const path_log = require('path');
+const os_log = require('os');
+const LOG_DIR = path_log.join(os_log.homedir(), '.codedash', 'logs');
+try { fs_log.mkdirSync(LOG_DIR, { recursive: true }); } catch {}
+const LOG_FILE = path_log.join(LOG_DIR, 'server.log');
+let _logStream = null;
+try { _logStream = fs_log.createWriteStream(LOG_FILE, { flags: 'a' }); } catch {}
+
+const LOG_MODE = (process.env.CODEDASH_LOG === '1' || process.env.CODEDASH_LOG === 'verbose') ? 'verbose' : 'quiet';
+const STDOUT_TAGS = new Set(['ERROR', 'WARN', 'JOB']);
 
 function log(tag, msg, data) {
-  if (!LOG_VERBOSE && tag !== 'ERROR') return;
   const ts = new Date().toLocaleTimeString('en-GB');
-  const color = tag === 'ERROR' ? '\x1b[31m' : tag === 'WARN' ? '\x1b[33m' : tag === 'API' ? '\x1b[36m' : '\x1b[2m';
+  if (_logStream) {
+    try {
+      let plain = `${ts} [${tag}] ${msg}`;
+      if (data !== undefined) {
+        const str = typeof data === 'object' ? JSON.stringify(data) : String(data);
+        plain += ' ' + (str.length > 500 ? str.slice(0, 500) + '...' : str);
+      }
+      _logStream.write(plain + '\n');
+    } catch {}
+  }
+  if (LOG_MODE !== 'verbose' && !STDOUT_TAGS.has(tag)) return;
+  const color = tag === 'ERROR' ? '\x1b[31m' : tag === 'WARN' ? '\x1b[33m' : tag === 'API' ? '\x1b[36m' : tag === 'JOB' ? '\x1b[32m' : '\x1b[2m';
   let line = `  ${color}${ts} [${tag}]\x1b[0m ${msg}`;
   if (data !== undefined) {
     const str = typeof data === 'object' ? JSON.stringify(data) : String(data);
@@ -33,7 +312,7 @@ function startServer(host, port, openBrowser = true) {
 
     // Log all API requests (skip static & frequent polls)
     const isApi = pathname.startsWith('/api/');
-    const isFrequent = pathname === '/api/active' || pathname === '/api/version';
+    const isFrequent = pathname === '/api/active' || pathname === '/api/version' || pathname === '/api/warming' || pathname === '/api/sessions' || pathname === '/api/sqlite-status';
     if (isApi && !isFrequent) {
       const params = Object.fromEntries(parsed.searchParams);
       log('API', `${req.method} ${pathname}`, Object.keys(params).length ? params : undefined);
@@ -66,12 +345,23 @@ function startServer(host, port, openBrowser = true) {
     // ── Sessions API ────────────────────────
     else if (req.method === 'GET' && pathname === '/api/sessions') {
       const sessions = loadSessions();
+      // By default hide codex_exec helper sessions (sub-agent runs) — the
+      // user can request them via ?include_helpers=1. Counts for helpers are
+      // sent as a header so the UI can show a "N helper sessions hidden" toggle.
+      const includeHelpers = parsed.searchParams.get('include_helpers') === '1';
+      const helperCount = sessions.filter(s => s.is_helper).length;
+      const filtered = includeHelpers ? sessions : sessions.filter(s => !s.is_helper);
+      // Preserve transient flags on the array
+      filtered._loading = sessions._loading;
+      filtered._warming = sessions._warming;
+      filtered._warmingProgress = sessions._warmingProgress;
+
       const byTool = {};
-      sessions.forEach(s => { byTool[s.tool] = (byTool[s.tool] || 0) + 1; });
-      log('DATA', `loaded ${sessions.length} sessions${sessions._loading ? ' (cursor loading...)' : ''}`, byTool);
-      // Send _loading flag as header to avoid polluting array response
+      filtered.forEach(s => { byTool[s.tool] = (byTool[s.tool] || 0) + 1; });
+      log('DATA', `loaded ${filtered.length} sessions (hidden ${helperCount} helpers)${sessions._loading ? ' (cursor loading...)' : ''}`, byTool);
       if (sessions._loading) res.setHeader('X-Loading', '1');
-      json(res, sessions);
+      if (helperCount > 0) res.setHeader('X-Helper-Count', String(helperCount));
+      json(res, filtered);
     }
 
     else if (req.method === 'GET' && pathname.startsWith('/api/session/') && !pathname.includes('/export')) {
@@ -162,6 +452,17 @@ function startServer(host, port, openBrowser = true) {
       const project = parsed.searchParams.get('project') || '';
       const info = getProjectGitInfo(project);
       json(res, info || { error: 'No git repo found' });
+    }
+
+    // ── Warming + SQLite index status ─────────
+    else if (req.method === 'GET' && pathname === '/api/warming') {
+      json(res, getWarmingStatus());
+    }
+
+    else if (req.method === 'GET' && pathname === '/api/sqlite-status') {
+      let indexStatus = {};
+      try { indexStatus = sqliteIndex.getIndexStatus(); } catch {}
+      json(res, { backfill: getSqliteBackfillStatus(), index: indexStatus });
     }
 
     // ── Active sessions ─────────────────────
@@ -263,8 +564,8 @@ function startServer(host, port, openBrowser = true) {
     // ── Full-text search ──────────────────────
     else if (req.method === 'GET' && pathname === '/api/search') {
       const q = parsed.searchParams.get('q') || '';
-      const sessions = loadSessions();
-      const results = searchFullText(q, sessions);
+      // Uses SQLite FTS5 index directly — no loadSessions needed
+      const results = searchFullText(q, []);
       json(res, results);
     }
 
@@ -284,15 +585,56 @@ function startServer(host, port, openBrowser = true) {
       json(res, data);
     }
 
-    // ── Cost analytics ──────────────────────
+    // ── Cost analytics (async job + live partial) ──────────────────
     else if (req.method === 'GET' && pathname === '/api/analytics/cost') {
-      let sessions = loadSessions();
-      const from = parsed.searchParams.get('from');
-      const to = parsed.searchParams.get('to');
-      if (from) sessions = sessions.filter(s => s.date >= from);
-      if (to) sessions = sessions.filter(s => s.date <= to);
-      const data = getCostAnalytics(sessions);
-      json(res, data);
+      const from = parsed.searchParams.get('from') || '';
+      const to = parsed.searchParams.get('to') || '';
+      const includeHelpers = parsed.searchParams.get('include_helpers') === '1';
+      const key = from + '|' + to + '|h' + (includeHelpers ? '1' : '0');
+      const job = _jobs.analytics;
+      if (job && job.state === 'done' && job.key === key) {
+        json(res, { status: 'done', ...job.result });
+      } else if (job && job.state === 'running' && job.key === key) {
+        json(res, _jobResponse(job));
+      } else {
+        // Try persistent cache FIRST so repeat visits don't trigger a rerun.
+        // Uses the sync in-memory sessions cache (fast when hot).
+        let served = false;
+        try {
+          const sessions = loadSessions();
+          let filtered = includeHelpers ? sessions : sessions.filter(s => !s.is_helper);
+          if (from) filtered = filtered.filter(s => s.date >= from);
+          if (to) filtered = filtered.filter(s => s.date <= to);
+          const fingerprint = _analyticsFingerprint(filtered, from, to, includeHelpers ? 'h1' : 'h0');
+          sqliteIndex.getAggregateCacheAsync('analytics', fingerprint).then(cached => {
+            if (served) return;
+            if (cached && cached.result) {
+              served = true;
+              _jobs.analytics = {
+                state: 'done', key, result: cached.result, partialResult: null,
+                progress: { done: filtered.length, total: filtered.length, phase: 'cached' },
+                error: null, startedAt: cached.computedAt, finishedAt: cached.computedAt,
+              };
+              json(res, { status: 'done', ...cached.result, _cached: true });
+            } else {
+              served = true;
+              _runAnalyticsJob(from, to, includeHelpers);
+              json(res, _jobResponse(_jobs.analytics));
+            }
+          }).catch(() => {
+            if (served) return;
+            served = true;
+            _runAnalyticsJob(from, to, includeHelpers);
+            json(res, _jobResponse(_jobs.analytics));
+          });
+        } catch (e) {
+          if (!served) {
+            served = true;
+            _runAnalyticsJob(from, to, includeHelpers);
+            json(res, _jobResponse(_jobs.analytics));
+          }
+        }
+      }
     }
 
     // ── LLM Config ────────────────────────────
@@ -356,9 +698,51 @@ function startServer(host, port, openBrowser = true) {
     }
 
     // ── Leaderboard stats ────────────────────
+    // ── Leaderboard (async job + live partial) ─────────────────
     else if (req.method === 'GET' && pathname === '/api/leaderboard') {
-      const stats = getLeaderboardStats();
-      json(res, stats);
+      const includeHelpers = parsed.searchParams.get('include_helpers') === '1';
+      const expectedKey = 'lb|h' + (includeHelpers ? '1' : '0');
+      const job = _jobs.leaderboard;
+      if (job && job.state === 'done' && job.key === expectedKey) {
+        json(res, { status: 'done', ...job.result });
+      } else if (job && job.state === 'running' && job.key === expectedKey) {
+        json(res, _jobResponse(job));
+      } else {
+        // Try persistent cache first (instant on repeat visits)
+        let served = false;
+        try {
+          const sessions = loadSessions();
+          const filtered = includeHelpers ? sessions : sessions.filter(s => !s.is_helper);
+          const fingerprint = _analyticsFingerprint(filtered, '', '', includeHelpers ? 'h1' : 'h0');
+          sqliteIndex.getAggregateCacheAsync('leaderboard', fingerprint).then(cached => {
+            if (served) return;
+            if (cached && cached.result) {
+              served = true;
+              _jobs.leaderboard = {
+                state: 'done', key: expectedKey, result: cached.result, partialResult: null,
+                progress: { done: filtered.length, total: filtered.length, phase: 'cached' },
+                error: null, startedAt: cached.computedAt, finishedAt: cached.computedAt,
+              };
+              json(res, { status: 'done', ...cached.result, _cached: true });
+            } else {
+              served = true;
+              _runLeaderboardJob(includeHelpers);
+              json(res, _jobResponse(_jobs.leaderboard));
+            }
+          }).catch(() => {
+            if (served) return;
+            served = true;
+            _runLeaderboardJob(includeHelpers);
+            json(res, _jobResponse(_jobs.leaderboard));
+          });
+        } catch (e) {
+          if (!served) {
+            served = true;
+            _runLeaderboardJob(includeHelpers);
+            json(res, _jobResponse(_jobs.leaderboard));
+          }
+        }
+      }
     }
 
     else if (req.method === 'POST' && pathname === '/api/leaderboard/sync') {

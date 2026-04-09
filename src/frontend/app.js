@@ -691,6 +691,9 @@ function renderCard(s, idx) {
   }
   html += '<div class="card-footer">';
   html += '<span class="card-meta">' + s.messages + ' msgs</span>';
+  if (s._group_extra > 0) {
+    html += '<span class="card-meta group-badge" title="' + s._group_count + ' sessions with the same initial prompt in this project">+' + s._group_extra + ' more (' + s._group_total_msgs + ' total msgs)</span>';
+  }
   if (s.file_size) {
     html += '<span class="card-meta">' + formatBytes(s.file_size) + '</span>';
   }
@@ -968,8 +971,14 @@ function render() {
   }
 
   var renderFn = layout === 'list' ? renderListCard : renderCard;
-  var visible = sessions.slice(0, renderLimit);
-  var hasMore = sessions.length > renderLimit;
+
+  // Dedupe conversation groups first (same project+initial prompt collapses
+  // into a single representative card with "+N more" badge). Shared helper
+  // used by Timeline / Cloud Sync too.
+  var conversationGroups = groupSessionsByConversation(sessions);
+  var dedupedSessions = conversationGroups.map(function(g) { return withGroupBadge(g.representative, g); });
+  var visible = dedupedSessions.slice(0, renderLimit);
+  var hasMore = dedupedSessions.length > renderLimit;
 
   if (grouped) {
     renderGrouped(content, visible, renderFn);
@@ -980,7 +989,7 @@ function render() {
   }
 
   if (hasMore) {
-    content.innerHTML += '<div style="text-align:center;padding:20px"><button class="toolbar-btn" onclick="loadMoreCards()" style="padding:8px 24px">Load more (' + (sessions.length - renderLimit) + ' remaining)</button></div>';
+    content.innerHTML += '<div style="text-align:center;padding:20px"><button class="toolbar-btn" onclick="loadMoreCards()" style="padding:8px 24px">Load more (' + (dedupedSessions.length - renderLimit) + ' remaining)</button></div>';
   }
 }
 
@@ -1024,13 +1033,63 @@ function renderGrouped(container, sessions, renderFn) {
   container.innerHTML = html;
 }
 
+// ── Shared session grouping ───────────────────────────────────
+// Collapses near-duplicate sessions (same project + same initial prompt) into
+// a single "conversation group". Representative is the newest session; the
+// rest are attached as `group_members` so the UI can show "+N more" and let
+// the user drill down. Used by Timeline / All Sessions / Cloud Sync views —
+// all call this helper, no per-view dedup logic.
+function groupSessionsByConversation(sessions) {
+  var groups = {};
+  var order = [];
+  sessions.forEach(function(s) {
+    var k = s.group_key || s.id;
+    if (!groups[k]) {
+      groups[k] = {
+        key: k,
+        representative: s,
+        members: [s],
+        total_msgs: s.messages || 0,
+        total_file_size: s.file_size || 0,
+      };
+      order.push(k);
+      return;
+    }
+    var g = groups[k];
+    g.members.push(s);
+    g.total_msgs += s.messages || 0;
+    g.total_file_size += s.file_size || 0;
+    // Newest last_ts wins as representative
+    if (s.last_ts > g.representative.last_ts) g.representative = s;
+  });
+  return order.map(function(k) { return groups[k]; });
+}
+
+// Decorate a session with group metadata so renderCard can show "+N more".
+function withGroupBadge(s, group) {
+  if (!group || group.members.length <= 1) return s;
+  var extra = group.members.length - 1;
+  // Clone shallow so we don't mutate the original
+  return Object.assign({}, s, {
+    _group_count: group.members.length,
+    _group_extra: extra,
+    _group_total_msgs: group.total_msgs,
+    _group_members: group.members,
+  });
+}
+
 function renderTimeline(container, sessions) {
-  // Group by date
+  // Group by date, then within each date dedupe near-duplicate conversations
   var byDate = {};
   sessions.forEach(function(s) {
     var d = s.date || 'unknown';
     if (!byDate[d]) byDate[d] = [];
     byDate[d].push(s);
+  });
+  // Replace each day's flat list with grouped representatives
+  Object.keys(byDate).forEach(function(d) {
+    var groups = groupSessionsByConversation(byDate[d]);
+    byDate[d] = groups.map(function(g) { return withGroupBadge(g.representative, g); });
   });
 
   var dates = Object.keys(byDate).sort().reverse();
@@ -1069,6 +1128,9 @@ function renderQACard(s, idx) {
   html += '<span class="qa-question">' + escHtml((s.first_message || '').slice(0, 160)) + '</span>';
   html += '<span class="qa-meta">';
   html += '<span class="qa-msgs">' + s.messages + ' msgs</span>';
+  if (s._group_extra > 0) {
+    html += '<span class="group-badge" title="' + s._group_count + ' sessions with the same initial prompt">+' + s._group_extra + '</span>';
+  }
   if (costStr) html += '<span class="cost-badge">' + costStr + '</span>';
   html += '<span class="qa-time">' + timeAgo(s.last_ts) + '</span>';
   html += '</span>';
@@ -1098,17 +1160,27 @@ function renderProjects(container, sessions) {
   var html = '<div class="git-projects">';
   sorted.forEach(function(entry) {
     var name = entry[0];
-    var list = entry[1].slice().sort(function(a, b) { return b.last_ts - a.last_ts; });
+    var rawList = entry[1];
+    // Dedupe conversation groups within the project (same first prompt
+    // collapses into one representative card with "+N more" badge).
+    var convGroups = groupSessionsByConversation(rawList);
+    var list = convGroups
+      .map(function(g) { return withGroupBadge(g.representative, g); })
+      .sort(function(a, b) { return b.last_ts - a.last_ts; });
+
     var color = getProjectColor(name);
-    var totalMsgs = list.reduce(function(s, e) { return s + (e.messages || 0); }, 0);
-    var totalCost = list.reduce(function(s, e) { return s + estimateCost(e.file_size); }, 0);
+    var totalMsgs = rawList.reduce(function(s, e) { return s + (e.messages || 0); }, 0);
+    var totalCost = rawList.reduce(function(s, e) { return s + estimateCost(e.file_size); }, 0);
     var costLabel = totalCost > 0 ? ' · ~$' + totalCost.toFixed(2) : '';
+    var dedupLabel = rawList.length !== list.length
+      ? ' (' + rawList.length + ' raw → ' + list.length + ' unique)'
+      : '';
 
     html += '<div class="git-project-group">';
     html += '<div class="git-project-header" onclick="this.parentElement.classList.toggle(\'collapsed\')">';
     html += '<span class="group-dot" style="background:' + color + '"></span>';
     html += '<span class="git-project-name">' + escHtml(name) + '</span>';
-    html += '<span class="git-project-stats">' + list.length + ' sessions · ' + totalMsgs + ' msgs' + escHtml(costLabel) + '</span>';
+    html += '<span class="git-project-stats">' + list.length + ' sessions' + dedupLabel + ' · ' + totalMsgs + ' msgs' + escHtml(costLabel) + '</span>';
     html += '<span class="group-chevron">&#9660;</span>';
     html += '</div>';
     html += '<div class="qa-list">';

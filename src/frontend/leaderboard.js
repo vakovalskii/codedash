@@ -170,8 +170,36 @@ async function githubLogout() {
 async function renderLeaderboard(container) {
   container.innerHTML = '<div class="loading">Loading stats...</div>';
   try {
-    var resp = await fetch('/api/leaderboard');
-    var data = await resp.json();
+    // Poll loop with live partial — same pattern as analytics
+    var pollStart = Date.now();
+    var data = null;
+    while (true) {
+      var resp = await fetch('/api/leaderboard');
+      var payload = await resp.json();
+      if (payload.status === 'done') { data = payload; break; }
+      if (payload.status === 'error') {
+        container.innerHTML = '<div class="empty-state">Leaderboard failed: ' + escHtml(payload.error || 'unknown') + '</div>';
+        return;
+      }
+      var p = (payload.progress || {});
+      var done = p.done || 0, total = p.total || 0;
+      var pct = total > 0 ? Math.round(done / total * 100) : 0;
+      var phase = p.phase || 'working';
+      var elapsed = Math.round((payload.elapsedMs || (Date.now() - pollStart)) / 1000);
+      var partialLine = '';
+      if (payload.partialResult && payload.partialResult.totals) {
+        var t = payload.partialResult.totals;
+        partialLine = ' · $' + (t.cost||0).toFixed(2) + ' / ' + (t.messages||0) + ' msgs so far';
+      }
+      container.innerHTML =
+        '<div class="analytics-progress">' +
+        '<div class="progress-title">Building leaderboard stats…</div>' +
+        '<div class="progress-phase">' + escHtml(phase) + ' — ' + done + ' / ' + total + ' sessions (' + pct + '%)</div>' +
+        '<div class="progress-bar-outer"><div class="progress-bar-inner" style="width:' + pct + '%"></div></div>' +
+        '<div class="progress-subtle">elapsed ' + elapsed + 's' + partialLine + '</div>' +
+        '</div>';
+      await new Promise(function(r){ setTimeout(r, 500); });
+    }
     var ghResp = await fetch('/api/github/profile');
     var gh = await ghResp.json();
 

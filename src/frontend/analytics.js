@@ -9,9 +9,43 @@ async function renderAnalytics(container) {
     if (dateFrom) params.push('from=' + dateFrom);
     if (dateTo) params.push('to=' + dateTo);
     if (params.length) url += '?' + params.join('&');
-    var resp = await fetch(url);
-    var data = await resp.json();
 
+    // Poll loop — server runs a background job, we render live partial snapshots
+    var pollStart = Date.now();
+    var data = null;
+    while (true) {
+      var resp = await fetch(url);
+      var payload = await resp.json();
+      if (payload.status === 'done') { data = payload; break; }
+      if (payload.status === 'error') {
+        container.innerHTML = '<div class="empty-state">Analytics failed: ' + escHtml(payload.error || 'unknown') + '</div>';
+        return;
+      }
+      var p = (payload.progress || {});
+      var done = p.done || 0, total = p.total || 0;
+      var pct = total > 0 ? Math.round(done / total * 100) : 0;
+      var phase = p.phase || 'working';
+      var elapsed = Math.round((payload.elapsedMs || (Date.now() - pollStart)) / 1000);
+      if (payload.partialResult && payload.partialResult.totalSessions > 0) {
+        renderAnalyticsUI(container, payload.partialResult, {
+          live: true, done: done, total: total, pct: pct, phase: phase, elapsed: elapsed,
+        });
+      } else {
+        container.innerHTML =
+          '<div class="analytics-progress">' +
+          '<div class="progress-title">Computing cost analytics…</div>' +
+          '<div class="progress-phase">' + escHtml(phase) + ' — ' + done + ' / ' + total + ' sessions (' + pct + '%)</div>' +
+          '<div class="progress-bar-outer"><div class="progress-bar-inner" style="width:' + pct + '%"></div></div>' +
+          '<div class="progress-subtle">elapsed ' + elapsed + 's · cached for next time</div>' +
+          '</div>';
+      }
+      await new Promise(function(r){ setTimeout(r, 500); });
+    }
+
+    renderAnalyticsUI(container, data, { live: false });
+    return;
+    /* === below is the original inline render block; kept so the upstream
+       split structure is preserved and renderAnalyticsUI uses the same code path === */
     var html = '<div class="analytics-container">';
     html += '<h2 class="heatmap-title">Cost Analytics</h2>';
 
@@ -225,6 +259,145 @@ async function renderAnalytics(container) {
   } catch (e) {
     container.innerHTML = '<div class="empty-state">Failed to load analytics.</div>';
   }
+}
+
+// Renders the full Cost Analytics UI from either partial (live) or final data.
+// When opts.live is true, prepends a sticky progress banner.
+function renderAnalyticsUI(container, data, opts) {
+  opts = opts || {};
+  var html = '<div class="analytics-container">';
+
+  if (opts.live) {
+    var pct = opts.pct || 0;
+    html += '<div class="analytics-live-banner">';
+    html += '<div class="alb-row"><span class="alb-pulse"></span><span class="alb-title">Computing cost analytics — live</span><span class="alb-elapsed">' + (opts.elapsed || 0) + 's</span></div>';
+    html += '<div class="alb-phase">' + escHtml(opts.phase || '') + ' — ' + (opts.done || 0) + ' / ' + (opts.total || 0) + ' sessions (' + pct + '%) · numbers update as sessions are processed</div>';
+    html += '<div class="progress-bar-outer"><div class="progress-bar-inner" style="width:' + pct + '%"></div></div>';
+    html += '</div>';
+  }
+
+  html += '<h2 class="heatmap-title">Cost Analytics' + (opts.live ? ' <span style="font-size:12px;opacity:0.6;font-weight:normal">(live)</span>' : '') + '</h2>';
+
+  // Summary cards
+  html += '<div class="analytics-summary">';
+  html += '<div class="analytics-card"><span class="analytics-val">$' + (data.totalCost || 0).toFixed(2) + '</span><span class="analytics-label">Total cost (API-equivalent)</span></div>';
+  html += '<div class="analytics-card"><span class="analytics-val">' + formatTokens(data.totalTokens || 0) + '</span><span class="analytics-label">Total tokens</span></div>';
+  html += '<div class="analytics-card"><span class="analytics-val">$' + (data.dailyRate || 0).toFixed(2) + '</span><span class="analytics-label">Avg per day (' + (data.days || 1) + ' days)</span></div>';
+  html += '<div class="analytics-card"><span class="analytics-val">' + (data.totalSessions || 0) + '</span><span class="analytics-label">Sessions</span></div>';
+  html += '</div>';
+
+  // Burn rate
+  var todayCost = data.todayCost || 0;
+  var last1hCost = data.last1hCost || 0;
+  var dailyRate = data.dailyRate || 0;
+  var hoursElapsed = data.hoursElapsedToday || 1;
+  var projectedDaily = todayCost / (hoursElapsed / 24);
+  var paceRatio = dailyRate > 0 ? projectedDaily / dailyRate : 0;
+  var burnClass = paceRatio >= 2 ? 'burn-high' : paceRatio >= 1.3 ? 'burn-medium' : 'burn-low';
+  var paceLabel = paceRatio >= 2 ? '🔥 ' + Math.round(paceRatio) + 'x avg' : paceRatio >= 1.3 ? '↑ ' + paceRatio.toFixed(1) + 'x avg' : dailyRate > 0 ? '✓ normal' : '';
+  html += '<div class="burn-rate-bar">';
+  html += '<div class="burn-rate-title">Burn Rate</div>';
+  html += '<div class="burn-rate-stats">';
+  html += '<div class="burn-stat"><span class="burn-val ' + burnClass + '">$' + todayCost.toFixed(3) + '</span><span class="burn-label">today</span>' + (paceLabel ? '<span class="burn-pace ' + burnClass + '">' + paceLabel + '</span>' : '') + '</div>';
+  html += '<div class="burn-stat"><span class="burn-val">$' + last1hCost.toFixed(3) + '</span><span class="burn-label">last hour</span></div>';
+  if (dailyRate > 0) {
+    html += '<div class="burn-stat"><span class="burn-val">$' + projectedDaily.toFixed(2) + '</span><span class="burn-label">projected today</span></div>';
+  }
+  html += '</div></div>';
+
+  // Token breakdown
+  if (data.totalInputTokens !== undefined) {
+    var totalTok = (data.totalInputTokens || 0) + (data.totalOutputTokens || 0) + (data.totalCacheReadTokens || 0) + (data.totalCacheCreateTokens || 0);
+    var pctOf = function(n) { return totalTok > 0 ? Math.round(n / totalTok * 100) : 0; };
+    html += '<div class="chart-section analytics-token-breakdown">';
+    html += '<h3>Token Breakdown</h3>';
+    html += '<div class="token-breakdown-grid">';
+    html += '<div class="token-type-card"><span class="token-type-val">' + formatTokens(data.totalInputTokens || 0) + '</span><span class="token-type-label">Input</span><span class="token-type-pct">' + pctOf(data.totalInputTokens || 0) + '%</span></div>';
+    html += '<div class="token-type-card"><span class="token-type-val">' + formatTokens(data.totalOutputTokens || 0) + '</span><span class="token-type-label">Output</span><span class="token-type-pct">' + pctOf(data.totalOutputTokens || 0) + '%</span></div>';
+    html += '<div class="token-type-card token-cache-read"><span class="token-type-val">' + formatTokens(data.totalCacheReadTokens || 0) + '</span><span class="token-type-label">Cache read</span><span class="token-type-pct">' + pctOf(data.totalCacheReadTokens || 0) + '%</span></div>';
+    html += '<div class="token-type-card token-cache-create"><span class="token-type-val">' + formatTokens(data.totalCacheCreateTokens || 0) + '</span><span class="token-type-label">Cache write</span><span class="token-type-pct">' + pctOf(data.totalCacheCreateTokens || 0) + '%</span></div>';
+    if (data.avgContextPct > 0) {
+      html += '<div class="token-type-card token-context"><span class="token-type-val">' + data.avgContextPct + '%</span><span class="token-type-label">Avg context used</span><span class="token-type-pct">of 200K</span></div>';
+    }
+    html += '</div></div>';
+  }
+
+  // Cost by agent
+  var agentEntries = Object.entries(data.byAgent || {}).filter(function(e) { return e[1].sessions > 0; });
+  if (agentEntries.length >= 1) {
+    agentEntries.sort(function(a, b) { return b[1].cost - a[1].cost; });
+    html += '<div class="chart-section"><h3>Cost by Agent</h3>';
+    html += '<div class="hbar-chart">';
+    var maxAgentCost = agentEntries[0][1].cost || 1;
+    agentEntries.forEach(function(entry) {
+      var name = entry[0]; var info = entry[1];
+      var p = maxAgentCost > 0 ? (info.cost / maxAgentCost * 100) : 0;
+      var label = { 'claude': 'Claude Code', 'claude-ext': 'Claude Ext', 'codex': 'Codex', 'opencode': 'OpenCode', 'cursor': 'Cursor', 'kiro': 'Kiro' }[name] || name;
+      var estMark = info.estimated ? ' <span style="font-size:10px;opacity:0.6">~est.</span>' : '';
+      html += '<div class="hbar-row">';
+      html += '<span class="hbar-name">' + label + estMark + '</span>';
+      html += '<div class="hbar-track"><div class="hbar-fill" style="width:' + p + '%"></div></div>';
+      html += '<span class="hbar-val">$' + info.cost.toFixed(2) + ' <span style="font-size:10px;opacity:0.6">(' + info.sessions + ' sess.)</span></span>';
+      html += '</div>';
+    });
+    html += '</div></div>';
+  }
+
+  // Daily cost chart (last 30 days)
+  var dayKeys = Object.keys(data.byDay || {}).sort();
+  var last30 = dayKeys.slice(-30);
+  if (last30.length > 0) {
+    var maxCost = Math.max.apply(null, last30.map(function(d) { return data.byDay[d].cost; }));
+    html += '<div class="chart-section"><h3>Daily Cost (last 30 days)</h3>';
+    html += '<div class="bar-chart">';
+    last30.forEach(function(d) {
+      var c = data.byDay[d];
+      var p = maxCost > 0 ? (c.cost / maxCost * 100) : 0;
+      var label = d.slice(5);
+      html += '<div class="bar-col" title="' + d + ': $' + c.cost.toFixed(2) + ' (' + c.sessions + ' sessions)">';
+      html += '<div class="bar-fill" style="height:' + p + '%"></div>';
+      html += '<div class="bar-label">' + label + '</div>';
+      html += '</div>';
+    });
+    html += '</div></div>';
+  }
+
+  // Cost by project
+  var projects = Object.entries(data.byProject || {}).sort(function(a, b) { return b[1].cost - a[1].cost; });
+  var topProjects = projects.slice(0, 10);
+  if (topProjects.length > 0) {
+    var maxProjCost = topProjects[0][1].cost || 1;
+    html += '<div class="chart-section"><h3>Cost by Project</h3>';
+    html += '<div class="hbar-chart">';
+    topProjects.forEach(function(entry) {
+      var name = entry[0]; var info = entry[1];
+      var p = maxProjCost > 0 ? (info.cost / maxProjCost * 100) : 0;
+      html += '<div class="hbar-row">';
+      html += '<span class="hbar-name">' + escHtml(name) + '</span>';
+      html += '<div class="hbar-track"><div class="hbar-fill" style="width:' + p + '%"></div></div>';
+      html += '<span class="hbar-val">$' + info.cost.toFixed(2) + '</span>';
+      html += '</div>';
+    });
+    html += '</div></div>';
+  }
+
+  // Top expensive sessions
+  if (data.topSessions && data.topSessions.length > 0) {
+    html += '<div class="chart-section"><h3>Most Expensive Sessions</h3>';
+    html += '<div class="top-sessions">';
+    data.topSessions.forEach(function(s) {
+      html += '<div class="top-session-row" onclick="onCardClick(\'' + s.id + '\', event)">';
+      html += '<span class="top-session-cost">$' + s.cost.toFixed(2) + '</span>';
+      html += '<span class="top-session-project">' + escHtml(s.project || '') + '</span>';
+      html += '<span class="top-session-date">' + (s.date || '') + '</span>';
+      html += '<span class="top-session-id">' + (s.id || '').slice(0, 8) + '</span>';
+      html += '</div>';
+    });
+    html += '</div></div>';
+  }
+
+  html += '</div>';
+  container.innerHTML = html;
 }
 
 function formatTokens(n) {
