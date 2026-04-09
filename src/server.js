@@ -735,26 +735,51 @@ function startServer(host, port, openBrowser = true) {
           const sessions = loadSessions();
           const filtered = includeHelpers ? sessions : sessions.filter(s => !s.is_helper);
           const fingerprint = _analyticsFingerprint(filtered, '', '', includeHelpers ? 'h1' : 'h0');
+          // Install a synchronous placeholder job BEFORE the async cache
+          // read so concurrent requests for the same key don't each kick
+          // off their own _runLeaderboardJob. Only the request that owns
+          // the placeholder proceeds to start the real job.
+          const placeholderJob = {
+            state: 'running',
+            key: expectedKey,
+            result: null,
+            partialResult: null,
+            progress: { done: 0, total: filtered.length, phase: 'cache' },
+            error: null,
+            startedAt: Date.now(),
+            finishedAt: null,
+          };
+          _jobs.leaderboard = placeholderJob;
           sqliteIndex.getAggregateCacheAsync('leaderboard', fingerprint).then(cached => {
             if (served) return;
             if (cached && cached.result) {
               served = true;
-              _jobs.leaderboard = {
-                state: 'done', key: expectedKey, result: cached.result, partialResult: null,
-                progress: { done: filtered.length, total: filtered.length, phase: 'cached' },
-                error: null, startedAt: cached.computedAt, finishedAt: cached.computedAt,
-              };
+              if (_jobs.leaderboard === placeholderJob) {
+                _jobs.leaderboard = {
+                  state: 'done', key: expectedKey, result: cached.result, partialResult: null,
+                  progress: { done: filtered.length, total: filtered.length, phase: 'cached' },
+                  error: null, startedAt: cached.computedAt, finishedAt: cached.computedAt,
+                };
+              }
               json(res, { status: 'done', ...cached.result, _cached: true });
             } else {
               served = true;
-              _runLeaderboardJob(includeHelpers);
-              json(res, _jobResponse(_jobs.leaderboard));
+              if (_jobs.leaderboard === placeholderJob) {
+                _runLeaderboardJob(includeHelpers);
+                json(res, _jobResponse(_jobs.leaderboard));
+              } else {
+                json(res, _jobResponse(_jobs.leaderboard));
+              }
             }
           }).catch(() => {
             if (served) return;
             served = true;
-            _runLeaderboardJob(includeHelpers);
-            json(res, _jobResponse(_jobs.leaderboard));
+            if (_jobs.leaderboard === placeholderJob) {
+              _runLeaderboardJob(includeHelpers);
+              json(res, _jobResponse(_jobs.leaderboard));
+            } else {
+              json(res, _jobResponse(_jobs.leaderboard));
+            }
           });
         } catch (e) {
           if (!served) {

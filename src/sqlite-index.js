@@ -33,9 +33,12 @@ const _CMD_BUSY = '.timeout 30000';
 
 function _exec(sql, opts) {
   opts = opts || {};
-  const args = ['-cmd', _CMD_BUSY, DB_FILE];
+  // sqlite3 CLI stops option parsing once it sees the database filename, so
+  // all flags (including -json) must come BEFORE DB_FILE or they're treated
+  // as part of the SQL input and silently ignored.
+  const args = ['-cmd', _CMD_BUSY];
   if (opts.json) args.push('-json');
-  args.push(sql);
+  args.push(DB_FILE, sql);
   const r = spawnSync('sqlite3', args, {
     encoding: 'utf8',
     maxBuffer: 64 * 1024 * 1024,
@@ -58,8 +61,10 @@ function _execJson(sql, opts) {
 function _execAsync(sql, opts) {
   opts = opts || {};
   return new Promise((resolve, reject) => {
-    const args = ['-cmd', _CMD_BUSY, DB_FILE];
+    // Options must come BEFORE DB_FILE (see _exec comment)
+    const args = ['-cmd', _CMD_BUSY];
     if (opts.json) args.push('-json');
+    args.push(DB_FILE);
     const child = spawn('sqlite3', args, {
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,

@@ -410,6 +410,10 @@ function getSqliteBackfillStatus() {
 
 function _ensureSqliteBackfillRunning() {
   if (_sqliteBackfillRunning) return;
+  // Don't re-scan after the initial backfill completed this process lifetime.
+  // New/changed files are ingested incrementally by the warmer; this full
+  // scan is only needed once on cold start.
+  if (_sqliteBackfillStatus.phase === 'done') return;
   let sqliteIndex;
   try { sqliteIndex = require('./sqlite-index'); } catch { return; }
 
