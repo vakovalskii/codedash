@@ -606,26 +606,47 @@ function startServer(host, port, openBrowser = true) {
           if (from) filtered = filtered.filter(s => s.date >= from);
           if (to) filtered = filtered.filter(s => s.date <= to);
           const fingerprint = _analyticsFingerprint(filtered, from, to, includeHelpers ? 'h1' : 'h0');
+          const placeholderJob = {
+            state: 'running',
+            key,
+            result: null,
+            partialResult: null,
+            progress: { done: 0, total: filtered.length, phase: 'cache' },
+            error: null,
+            startedAt: Date.now(),
+            finishedAt: null,
+          };
+          _jobs.analytics = placeholderJob;
           sqliteIndex.getAggregateCacheAsync('analytics', fingerprint).then(cached => {
             if (served) return;
             if (cached && cached.result) {
               served = true;
-              _jobs.analytics = {
-                state: 'done', key, result: cached.result, partialResult: null,
-                progress: { done: filtered.length, total: filtered.length, phase: 'cached' },
-                error: null, startedAt: cached.computedAt, finishedAt: cached.computedAt,
-              };
+              if (_jobs.analytics === placeholderJob) {
+                _jobs.analytics = {
+                  state: 'done', key, result: cached.result, partialResult: null,
+                  progress: { done: filtered.length, total: filtered.length, phase: 'cached' },
+                  error: null, startedAt: cached.computedAt, finishedAt: cached.computedAt,
+                };
+              }
               json(res, { status: 'done', ...cached.result, _cached: true });
             } else {
               served = true;
-              _runAnalyticsJob(from, to, includeHelpers);
-              json(res, _jobResponse(_jobs.analytics));
+              if (_jobs.analytics === placeholderJob) {
+                _runAnalyticsJob(from, to, includeHelpers);
+                json(res, _jobResponse(_jobs.analytics));
+              } else {
+                json(res, _jobResponse(_jobs.analytics));
+              }
             }
           }).catch(() => {
             if (served) return;
             served = true;
-            _runAnalyticsJob(from, to, includeHelpers);
-            json(res, _jobResponse(_jobs.analytics));
+            if (_jobs.analytics === placeholderJob) {
+              _runAnalyticsJob(from, to, includeHelpers);
+              json(res, _jobResponse(_jobs.analytics));
+            } else {
+              json(res, _jobResponse(_jobs.analytics));
+            }
           });
         } catch (e) {
           if (!served) {
