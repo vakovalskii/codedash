@@ -1867,7 +1867,7 @@ function _saveGitRootDiskCache() {
 // (is_helper=true) all collapse into their own single bucket per project.
 function computeSessionGroupKey(s) {
   const proj = (s.project || 'unknown').trim();
-  // Normalize first message: lowercase, collapse whitespace, truncate
+  // Normalize first message: collapse whitespace, trim, truncate
   let msg = (s.first_message || '').replace(/\s+/g, ' ').trim().slice(0, 200);
   if (s.is_helper) {
     // All helpers in the same project collapse into one group.
