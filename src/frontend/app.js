@@ -28,6 +28,7 @@ let stars = JSON.parse(localStorage.getItem('codedash-stars') || '[]');
 let tags = JSON.parse(localStorage.getItem('codedash-tags') || '{}');
 let sessionTitles = JSON.parse(localStorage.getItem('codedash-titles') || '{}');
 let showAITitles = localStorage.getItem('codedash-ai-titles') !== 'false';
+let showAllSessionsListBadges = localStorage.getItem('codedash-all-sessions-list-badges') !== 'false';
 
 // ── Color palette for projects ─────────────────────────────────
 
@@ -288,6 +289,12 @@ function toggleStar(id) {
 function toggleAITitles(checked) {
   showAITitles = checked;
   localStorage.setItem('codedash-ai-titles', checked ? 'true' : 'false');
+  render();
+}
+
+function toggleAllSessionsListBadges(checked) {
+  showAllSessionsListBadges = checked;
+  localStorage.setItem('codedash-all-sessions-list-badges', checked ? 'true' : 'false');
   render();
 }
 
@@ -748,6 +755,7 @@ function renderListCard(s, idx) {
   var isFocused = focusedIndex === idx;
   var projName = getProjectName(s.project);
   var projColor = getProjectColor(projName);
+  var showBadges = showAllSessionsListBadges;
 
   var classes = 'list-row';
   if (isSelected) classes += ' selected';
@@ -756,12 +764,12 @@ function renderListCard(s, idx) {
   var html = '<div class="' + classes + '" data-id="' + s.id + '" onclick="onCardClick(\'' + s.id + '\', event)">';
   var listToolLabel = s.tool === 'claude-ext' ? 'claude ext' : s.tool;
   html += '<span class="tool-badge tool-' + s.tool + '">' + escHtml(listToolLabel) + '</span>';
-  if (s.mcp_servers && s.mcp_servers.length > 0) {
+  if (showBadges && s.mcp_servers && s.mcp_servers.length > 0) {
     s.mcp_servers.forEach(function(m) {
       html += '<span class="tool-badge badge-mcp">' + escHtml(m) + '</span>';
     });
   }
-  if (s.skills && s.skills.length > 0) {
+  if (showBadges && s.skills && s.skills.length > 0) {
     s.skills.forEach(function(sk) {
       html += '<span class="tool-badge badge-skill">' + escHtml(sk) + '</span>';
     });
@@ -1534,6 +1542,7 @@ function renderSettings(container) {
   var savedTheme = localStorage.getItem('codedash-theme') || 'dark';
   var savedTerminal = localStorage.getItem('codedash-terminal') || '';
   var aiTitlesOn = localStorage.getItem('codedash-ai-titles') === 'true';
+  var allSessionsListBadgesOn = localStorage.getItem('codedash-all-sessions-list-badges') !== 'false';
   var savedGroupingMode = normalizeGroupingMode(localStorage.getItem('codedash-grouping-mode'));
 
   var html = '<div class="settings-page">';
@@ -1570,6 +1579,15 @@ function renderSettings(container) {
   html += '<div class="settings-checkbox">';
   html += '<input type="checkbox" id="settingsAiToggle"' + (aiTitlesOn ? ' checked' : '') + ' onchange="toggleAITitles(this.checked)">';
   html += '<span style="font-size:13px;color:var(--text-secondary)">Show generated titles</span>';
+  html += '</div>';
+  html += '</div>';
+
+  // All Sessions list badges
+  html += '<div class="settings-group">';
+  html += '<label class="settings-label">Session List Badges</label>';
+  html += '<div class="settings-checkbox">';
+  html += '<input type="checkbox" id="settingsAllSessionsBadgesToggle"' + (allSessionsListBadgesOn ? ' checked' : '') + ' onchange="toggleAllSessionsListBadges(this.checked)">';
+  html += '<span style="font-size:13px;color:var(--text-secondary)">Show MCP and Skills badges in list-view session rows</span>';
   html += '</div>';
   html += '</div>';
 
