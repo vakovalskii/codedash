@@ -55,11 +55,14 @@ const CURSOR_GLOBAL_DB = path.join(CURSOR_APP_DATA, 'User', 'globalStorage', 'st
 const CURSOR_WORKSPACE_STORAGE = path.join(CURSOR_APP_DATA, 'User', 'workspaceStorage');
 const HISTORY_FILE = path.join(CLAUDE_DIR, 'history.jsonl');
 const PROJECTS_DIR = path.join(CLAUDE_DIR, 'projects');
+const DROID_DIR = path.join(ALL_HOMES[0], '.factory');
+const DROID_SESSIONS_DIR = path.join(DROID_DIR, 'sessions');
 
 // On WSL, collect all alternative data dirs
 const EXTRA_CLAUDE_DIRS = ALL_HOMES.slice(1).map(h => path.join(h, '.claude')).filter(d => fs.existsSync(d));
 const EXTRA_CODEX_DIRS = ALL_HOMES.slice(1).map(h => path.join(h, '.codex')).filter(d => fs.existsSync(d));
 const EXTRA_CURSOR_DIRS = ALL_HOMES.slice(1).map(h => path.join(h, '.cursor')).filter(d => fs.existsSync(d));
+const EXTRA_DROID_DIRS = ALL_HOMES.slice(1).map(h => path.join(h, '.factory')).filter(d => fs.existsSync(d));
 
 // Extra OpenCode/Kiro DBs on Windows side
 const EXTRA_OPENCODE_DBS = ALL_HOMES.slice(1).map(h => path.join(h, 'AppData', 'Local', 'opencode', 'opencode.db')).filter(d => fs.existsSync(d));
@@ -70,6 +73,7 @@ if (IS_WSL) {
   if (EXTRA_CLAUDE_DIRS.length) console.log('  \x1b[36m[WSL]\x1b[0m Extra Claude dirs:', EXTRA_CLAUDE_DIRS.join(', '));
   if (EXTRA_CODEX_DIRS.length) console.log('  \x1b[36m[WSL]\x1b[0m Extra Codex dirs:', EXTRA_CODEX_DIRS.join(', '));
   if (EXTRA_CURSOR_DIRS.length) console.log('  \x1b[36m[WSL]\x1b[0m Extra Cursor dirs:', EXTRA_CURSOR_DIRS.join(', '));
+  if (EXTRA_DROID_DIRS.length) console.log('  \x1b[36m[WSL]\x1b[0m Extra Droid dirs:', EXTRA_DROID_DIRS.join(', '));
 }
 
 // ── Helpers ────────────────────────────────────────────────
@@ -1126,6 +1130,132 @@ function scanCodexSessions() {
   return sessions;
 }
 
+// ── Factory Droid ──────────────────────────────────────────
+
+function parseDroidSessionFile(sessionFile) {
+  if (!fs.existsSync(sessionFile)) return null;
+
+  let stat;
+  let lines;
+  try {
+    stat = fs.statSync(sessionFile);
+    lines = readLines(sessionFile);
+  } catch {
+    return null;
+  }
+
+  let projectPath = '';
+  let sessionTitle = '';
+  let msgCount = 0;
+  let userMsgCount = 0;
+  let firstMsg = '';
+  let firstTs = stat.mtimeMs;
+  let lastTs = stat.mtimeMs;
+  const mcpSet = new Set();
+
+  for (const line of lines) {
+    try {
+      const entry = JSON.parse(line);
+
+      // session_start → extract cwd and title
+      if (entry.type === 'session_start') {
+        if (entry.cwd && !projectPath) projectPath = entry.cwd;
+        if (entry.sessionTitle) sessionTitle = entry.sessionTitle;
+        continue;
+      }
+
+      // message → same format as Claude Code: {type: "message", message: {role, content: [blocks]}}
+      if (entry.type === 'message') {
+        const ts = entry.timestamp ? Date.parse(entry.timestamp) : NaN;
+        if (Number.isFinite(ts)) {
+          if (ts < firstTs) firstTs = ts;
+          if (ts > lastTs) lastTs = ts;
+        }
+
+        const msg = entry.message || {};
+        const role = msg.role;
+        if (role !== 'user' && role !== 'assistant') continue;
+
+        const content = extractContent(msg.content);
+        if (!content || isSystemMessage(content)) continue;
+
+        // MCP tool_use detection from assistant content blocks
+        if (role === 'assistant' && Array.isArray(msg.content)) {
+          for (const block of msg.content) {
+            if (block.type === 'tool_use') {
+              const name = block.name || '';
+              if (name.startsWith('mcp__')) {
+                const parts = name.split('__');
+                if (parts.length >= 3) mcpSet.add(parts[1]);
+              }
+            }
+          }
+        }
+
+        msgCount++;
+        if (role === 'user') userMsgCount++;
+        if (!firstMsg) firstMsg = content.slice(0, 200);
+      }
+    } catch {}
+  }
+
+  return {
+    projectPath,
+    sessionTitle,
+    msgCount,
+    userMsgCount,
+    firstMsg,
+    firstTs,
+    lastTs,
+    fileSize: stat.size,
+    mcpServers: Array.from(mcpSet),
+  };
+}
+
+function scanDroidSessions() {
+  const sessions = [];
+  if (!fs.existsSync(DROID_SESSIONS_DIR)) return sessions;
+
+  try {
+    // Structure: ~/.factory/sessions/<project-key>/<uuid>.jsonl
+    for (const projDir of fs.readdirSync(DROID_SESSIONS_DIR)) {
+      const projPath = path.join(DROID_SESSIONS_DIR, projDir);
+      try {
+        if (!fs.statSync(projPath).isDirectory()) continue;
+      } catch { continue; }
+
+      for (const file of fs.readdirSync(projPath)) {
+        if (!file.endsWith('.jsonl')) continue;
+        const sid = file.replace('.jsonl', '');
+        if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(sid)) continue;
+
+        const fp = path.join(projPath, file);
+        const summary = parseDroidSessionFile(fp);
+        if (!summary) continue;
+
+        sessions.push({
+          id: sid,
+          tool: 'droid',
+          project: summary.projectPath,
+          project_short: summary.projectPath ? summary.projectPath.replace(os.homedir(), '~') : '',
+          first_ts: summary.firstTs,
+          last_ts: summary.lastTs,
+          messages: summary.msgCount,
+          first_message: summary.sessionTitle || summary.firstMsg || '',
+          has_detail: true,
+          file_size: summary.fileSize,
+          detail_messages: summary.msgCount,
+          user_messages: summary.userMsgCount || 0,
+          mcp_servers: summary.mcpServers || [],
+          skills: [],
+        });
+      }
+    }
+  } catch {}
+
+  return sessions;
+}
+
 // ── Git root resolver ───────────────────────────────────────
 //
 // Priority order for determining the git root of a session:
@@ -1228,6 +1358,7 @@ const SESSIONS_CACHE_TTL = 60000; // 60 seconds — hot cache, invalidated by fi
 let _historyMtime = 0;
 let _historySize = 0;
 let _projectsDirMtime = 0;
+let _droidDirMtime = 0;
 
 function _sessionsNeedRescan() {
   // Check if history.jsonl or projects dir changed since last scan
@@ -1239,6 +1370,10 @@ function _sessionsNeedRescan() {
     if (fs.existsSync(PROJECTS_DIR)) {
       const st = fs.statSync(PROJECTS_DIR);
       if (st.mtimeMs !== _projectsDirMtime) return true;
+    }
+    if (fs.existsSync(DROID_SESSIONS_DIR)) {
+      const st = fs.statSync(DROID_SESSIONS_DIR);
+      if (st.mtimeMs !== _droidDirMtime) return true;
     }
   } catch {}
   return false;
@@ -1253,6 +1388,9 @@ function _updateScanMarkers() {
     }
     if (fs.existsSync(PROJECTS_DIR)) {
       _projectsDirMtime = fs.statSync(PROJECTS_DIR).mtimeMs;
+    }
+    if (fs.existsSync(DROID_SESSIONS_DIR)) {
+      _droidDirMtime = fs.statSync(DROID_SESSIONS_DIR).mtimeMs;
     }
   } catch {}
 }
@@ -1470,6 +1608,16 @@ function loadSessions() {
       sessions[ks.id] = ks;
     }
   } catch {}
+
+  // Load Droid sessions
+  if (fs.existsSync(DROID_DIR)) {
+    try {
+      const droidSessions = scanDroidSessions();
+      for (const ds of droidSessions) {
+        sessions[ds.id] = ds;
+      }
+    } catch {}
+  }
 
   // WSL: also load from Windows-side dirs
   for (const extraClaudeDir of EXTRA_CLAUDE_DIRS) {
@@ -1702,6 +1850,22 @@ function loadSessionDetail(sessionId, project) {
             messages.push(msg);
           }
         }
+      } else if (found.format === 'droid') {
+        // Droid format: same as Claude — {type: "message", message: {role, content: [blocks]}}
+        if (entry.type !== 'message') continue;
+        const msg = entry.message || {};
+        const role = msg.role;
+        if (role === 'user' || role === 'assistant') {
+          const content = extractContent(msg.content);
+          if (content && !isSystemMessage(content)) {
+            const m = { role, content: content.slice(0, 2000), uuid: entry.id || '' };
+            if (role === 'assistant' && Array.isArray(msg.content)) {
+              const tools = extractTools(msg.content);
+              if (tools.length > 0) m.tools = tools;
+            }
+            messages.push(m);
+          }
+        }
       } else {
         // Codex format: response_item with payload
         if (entry.type === 'response_item' && entry.payload) {
@@ -1826,7 +1990,7 @@ function exportSessionMarkdown(sessionId, project) {
       found.format === 'cursor' ? loadCursorDetail(sessionId) :
       found.format === 'opencode' ? loadOpenCodeDetail(sessionId) :
       found.format === 'kiro' ? loadKiroDetail(sessionId) :
-      null;
+      loadSessionDetail(sessionId, project);
     if (detail && detail.messages && detail.messages.length > 0) {
       const parts = [`# Session ${sessionId}\n\n**Project:** ${project || '(none)'}\n`];
       for (const msg of detail.messages) {
@@ -1938,6 +2102,25 @@ function _buildSessionFileIndex() {
     } catch {}
   }
 
+  // Index Droid project files
+  if (fs.existsSync(DROID_SESSIONS_DIR)) {
+    try {
+      const walkDir = (dir) => {
+        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+          const full = path.join(dir, entry.name);
+          if (entry.isDirectory()) walkDir(full);
+          else if (entry.name.endsWith('.jsonl')) {
+            const uuidMatch = entry.name.match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/);
+            if (uuidMatch && !_sessionFileIndex[uuidMatch[1]]) {
+              _sessionFileIndex[uuidMatch[1]] = { file: full, format: 'droid' };
+            }
+          }
+        }
+      };
+      walkDir(DROID_SESSIONS_DIR);
+    } catch {}
+  }
+
   _sessionFileIndexTs = now;
 }
 
@@ -2010,6 +2193,24 @@ function findSessionFile(sessionId, project) {
     } catch {}
   }
 
+  // Try Droid projects dir (walk recursively)
+  if (fs.existsSync(DROID_SESSIONS_DIR)) {
+    const walkDir = (dir) => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          const result = walkDir(full);
+          if (result) return result;
+        } else if (entry.name.includes(sessionId) && entry.name.endsWith('.jsonl')) {
+          return full;
+        }
+      }
+      return null;
+    };
+    const droidFile = walkDir(DROID_SESSIONS_DIR);
+    if (droidFile) return { file: droidFile, format: 'droid' };
+  }
+
   return null;
 }
 
@@ -2025,6 +2226,9 @@ function isSystemMessage(text) {
   // Codex developer role system prompts
   if (t.startsWith('You are Codex')) return true;
   if (t.startsWith('Filesystem sandboxing')) return true;
+  // Droid system prompts
+  if (t.startsWith('You are Droid')) return true;
+  if (t.startsWith('<factory_config')) return true;
   return false;
 }
 
@@ -2118,6 +2322,18 @@ function getSessionPreview(sessionId, project, limit) {
           const content = extractContent((entry.message || {}).content);
           if (content) {
             messages.push({ role: entry.type, content: content.slice(0, 300) });
+          }
+        }
+      } else if (found.format === 'droid') {
+        // Droid: same as Claude — {type: "message", message: {role, content: [blocks]}}
+        if (entry.type === 'message') {
+          const msg = entry.message || {};
+          const role = msg.role;
+          if (role === 'user' || role === 'assistant') {
+            const content = extractContent(msg.content);
+            if (content && !isSystemMessage(content)) {
+              messages.push({ role: role, content: content.slice(0, 300) });
+            }
           }
         }
       } else {
@@ -2259,6 +2475,13 @@ function getSessionReplay(sessionId, project) {
         if (entry.type !== 'user' && entry.type !== 'assistant') continue;
         role = entry.type;
         content = extractContent((entry.message || {}).content);
+        ts = entry.timestamp || '';
+      } else if (found.format === 'droid') {
+        if (entry.type !== 'message') continue;
+        const msg = entry.message || {};
+        role = msg.role;
+        if (role !== 'user' && role !== 'assistant') continue;
+        content = extractContent(msg.content);
         ts = entry.timestamp || '';
       } else {
         if (entry.type !== 'response_item' || !entry.payload) continue;
@@ -2478,6 +2701,18 @@ function computeSessionCost(sessionId, project) {
     } catch {}
   }
 
+  // Fallback for Droid sessions without usage data
+  if (totalCost === 0 && found.format === 'droid') {
+    try {
+      const size = fs.statSync(found.file).size;
+      const tokens = size / 4;
+      const pricing = MODEL_PRICING['claude-sonnet-4-6'];
+      totalInput = Math.round(tokens * 0.3);
+      totalOutput = Math.round(tokens * 0.7);
+      totalCost = totalInput * pricing.input + totalOutput * pricing.output;
+    } catch {}
+  }
+
   const result = { cost: totalCost, inputTokens: totalInput, outputTokens: totalOutput, cacheReadTokens: totalCacheRead, cacheCreateTokens: totalCacheCreate, contextPctSum, contextTurnCount, model };
   if (cacheKey) _costDiskCache[cacheKey] = result;
   _costMemCache[sessionId] = result;
@@ -2639,6 +2874,7 @@ function _computeCostAnalytics(sessions) {
     byAgent[agent].sessions++;
     byAgent[agent].tokens += tokens;
     if (agent === 'codex') byAgent[agent].estimated = true;
+    if (agent === 'droid') byAgent[agent].estimated = true;
     if (agent === 'cursor' && costData.model && costData.model.includes('-estimated')) byAgent[agent].estimated = true;
     if (agent === 'opencode' && !costData.model) byAgent[agent].estimated = true;
 
@@ -2750,6 +2986,7 @@ function getActiveSessions() {
     { pattern: 'opencode', tool: 'opencode', match: /\/opencode\s|^opencode\s|\bopencode\b/ },
     { pattern: 'kiro', tool: 'kiro', match: /kiro-cli/ },
     { pattern: 'cursor-agent', tool: 'cursor', match: /cursor-agent/ },
+    { pattern: 'droid', tool: 'droid', match: /\bdroid\b/ },
   ];
 
   // Skip process scanning on Windows (no ps/grep)
@@ -2757,7 +2994,7 @@ function getActiveSessions() {
 
   try {
     const psOut = execSync(
-      'ps aux 2>/dev/null | grep -E "claude|codex|opencode|kiro-cli|cursor-agent" | grep -v grep || true',
+      'ps aux 2>/dev/null | grep -E "claude|codex|opencode|kiro-cli|cursor-agent|droid" | grep -v grep || true',
       { encoding: 'utf8', timeout: 3000, stdio: ['pipe', 'pipe', 'pipe'] }
     );
 
@@ -2924,6 +3161,14 @@ function _computeSessionDailyBreakdown(s, found) {
           const c = (entry.message || {}).content;
           if (Array.isArray(c)) { for (const p of c) { if (p.type === 'text' && p.text && p.text.replace(/<\/?user_query>/g,'').trim()) { hasText = true; break; } } }
           else if (typeof c === 'string' && c.trim()) hasText = true;
+        } else if (found.format === 'droid') {
+          if (entry.type !== 'message') continue;
+          const msg = entry.message || {};
+          if (msg.role !== 'user') continue;
+          isUser = true;
+          ts = entry.timestamp ? Date.parse(entry.timestamp) : s.first_ts;
+          const c = extractContent(msg.content);
+          if (c && c.trim()) hasText = true;
         } else if (found.format === 'codex') {
           if (entry.type === 'response_item' && entry.payload && entry.payload.role === 'user') {
             isUser = true;
@@ -3137,4 +3382,5 @@ module.exports = {
   KIRO_DB,
   HISTORY_FILE,
   PROJECTS_DIR,
+  DROID_DIR,
 };
