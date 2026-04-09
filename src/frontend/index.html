@@ -111,6 +111,11 @@
 <div class="main">
     <div class="toolbar">
         <input type="text" class="search-box" placeholder="Search sessions, projects... (press /)" oninput="onSearch(this.value)">
+        <div class="search-mode-group">
+            <button class="search-mode-btn" data-mode="text" onclick="setSearchMode('text')" title="Keyword search (FTS5)">Text</button>
+            <button class="search-mode-btn active" data-mode="hybrid" onclick="setSearchMode('hybrid')" title="Text + semantic re-ranking">Hybrid</button>
+            <button class="search-mode-btn" data-mode="semantic" onclick="setSearchMode('semantic')" title="Pure semantic similarity">Semantic</button>
+        </div>
         <select id="tagFilter" class="toolbar-btn" onchange="onTagFilter(this.value)">
             <option value="">All Tags</option>
             <option value="bug">bug</option>

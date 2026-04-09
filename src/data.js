@@ -498,6 +498,42 @@ function _ensureSqliteBackfillRunning() {
       }
       await _flushSqliteIngestBatch();
 
+      // Phase 2: compute embeddings for sessions that don't have them yet
+      // (requires optional @huggingface/transformers npm package)
+      try {
+        const embeddings = require('./embeddings');
+        if (embeddings.isAvailable()) {
+          _sqliteBackfillStatus.phase = 'computing embeddings';
+          embeddings.ensureEmbeddingTable();
+          const existingCount = embeddings.getEmbeddingCount();
+          // Get sessions without embeddings
+          const allSessionRows = sqliteIndex._execJson(`SELECT id, first_message FROM sessions WHERE id NOT IN (SELECT session_id FROM session_embeddings) AND first_message != '' LIMIT 5000`);
+          if (allSessionRows.length > 0) {
+            _sqliteBackfillStatus.total = allSessionRows.length;
+            _sqliteBackfillStatus.done = 0;
+            const BATCH = 32;
+            for (let i = 0; i < allSessionRows.length; i += BATCH) {
+              const batch = allSessionRows.slice(i, i + BATCH);
+              const texts = batch.map(r => (r.first_message || '').slice(0, 512));
+              try {
+                const embs = await embeddings.embedBatch(texts);
+                const rows = batch.map((r, j) => ({
+                  session_id: r.id,
+                  embedding: embs[j],
+                  model: embeddings.MODEL_ID,
+                }));
+                embeddings.storeEmbeddings(rows);
+              } catch (e) {
+                // Model download/init error — skip embeddings
+                break;
+              }
+              _sqliteBackfillStatus.done = Math.min(i + BATCH, allSessionRows.length);
+              await new Promise(r => setImmediate(r));
+            }
+          }
+        }
+      } catch {}
+
       _sqliteBackfillStatus.phase = 'done';
       _sqliteBackfillStatus.finishedAt = Date.now();
     } catch (e) {

@@ -256,6 +256,32 @@ body {
 .search-box:focus { border-color: var(--accent-blue); }
 .search-box::placeholder { color: var(--text-muted); }
 
+.search-mode-group {
+    display: flex;
+    gap: 0;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+    flex-shrink: 0;
+}
+.search-mode-btn {
+    background: var(--bg-card);
+    border: none;
+    padding: 6px 10px;
+    font-size: 11px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all 0.15s;
+    border-right: 1px solid var(--border);
+}
+.search-mode-btn:last-child { border-right: none; }
+.search-mode-btn:hover { background: var(--bg-card-hover); }
+.search-mode-btn.active {
+    background: var(--accent-blue);
+    color: #fff;
+    font-weight: 600;
+}
+
 .toolbar-btn {
     background: var(--bg-card);
     border: 1px solid var(--border);

@@ -561,12 +561,46 @@ function startServer(host, port, openBrowser = true) {
       json(res, messages);
     }
 
-    // ── Full-text search ──────────────────────
+    // ── Full-text + semantic search ──────────────────────
     else if (req.method === 'GET' && pathname === '/api/search') {
       const q = parsed.searchParams.get('q') || '';
-      // Prefer the SQLite FTS5 index, but provide sessions so in-memory fallback can work
-      const results = searchFullText(q, loadSessions());
-      json(res, results);
+      const mode = parsed.searchParams.get('mode') || 'text'; // text|semantic|hybrid
+      if (mode === 'semantic' || mode === 'hybrid') {
+        // Vector / hybrid search (async — needs model load on first call)
+        let embeddings;
+        try { embeddings = require('./embeddings'); } catch {}
+        if (!embeddings || !embeddings.isAvailable()) {
+          // Fallback to text search
+          const results = searchFullText(q, loadSessions());
+          json(res, results);
+        } else {
+          const fn = mode === 'hybrid' ? embeddings.hybridSearch : embeddings.semanticSearch;
+          fn(q, 50).then(results => {
+            json(res, results);
+          }).catch(e => {
+            log('ERROR', `${mode} search failed: ${e.message}`);
+            // Fallback to text
+            const results = searchFullText(q, loadSessions());
+            json(res, results);
+          });
+        }
+      } else {
+        // Pure text search (FTS5)
+        const results = searchFullText(q, loadSessions());
+        json(res, results);
+      }
+    }
+
+    // ── Embedding status ──────────────────────
+    else if (req.method === 'GET' && pathname === '/api/embeddings/status') {
+      let embeddings;
+      try { embeddings = require('./embeddings'); } catch {}
+      json(res, {
+        available: embeddings ? embeddings.isAvailable() : false,
+        model: embeddings ? embeddings.MODEL_ID : null,
+        dim: embeddings ? embeddings.EMBEDDING_DIM : 0,
+        count: embeddings ? embeddings.getEmbeddingCount() : 0,
+      });
     }
 
     // ── Session cost ──────────────────────

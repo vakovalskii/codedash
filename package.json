@@ -32,5 +32,8 @@
   "license": "MIT",
   "engines": {
     "node": ">=18"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "^4.0.1"
   }
 }

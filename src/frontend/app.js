@@ -826,18 +826,33 @@ async function toggleExpand(sessionId, project, btn) {
 
 var deepSearchCache = {};
 var deepSearchTimeout = null;
+var searchMode = 'hybrid'; // text|semantic|hybrid
+
+function setSearchMode(mode) {
+  searchMode = mode;
+  document.querySelectorAll('.search-mode-btn').forEach(function(b) {
+    b.classList.toggle('active', b.dataset.mode === mode);
+  });
+  // Re-run current search with new mode
+  deepSearchCache = {};
+  if (searchQuery && searchQuery.length >= 3) {
+    deepSearch(searchQuery);
+  }
+}
 
 async function deepSearch(query) {
   if (!query || query.length < 3) return;
-  if (deepSearchCache[query]) {
-    applyDeepSearchResults(deepSearchCache[query]);
+  var cacheKey = searchMode + ':' + query;
+  if (deepSearchCache[cacheKey]) {
+    applyDeepSearchResults(deepSearchCache[cacheKey]);
     return;
   }
 
   try {
-    var resp = await fetch('/api/search?q=' + encodeURIComponent(query));
+    var url = '/api/search?q=' + encodeURIComponent(query) + '&mode=' + searchMode;
+    var resp = await fetch(url);
     var results = await resp.json();
-    deepSearchCache[query] = results;
+    deepSearchCache[cacheKey] = results;
     applyDeepSearchResults(results);
   } catch {}
 }
