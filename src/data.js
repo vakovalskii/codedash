@@ -2725,9 +2725,9 @@ function getActiveSessions() {
 
   // 2. Scan ALL agent processes via ps
   const agentPatterns = [
-    { pattern: 'claude', tool: 'claude', match: /\bclaude\b/ },
-    { pattern: 'codex', tool: 'codex', match: /\bcodex\b/ },
-    { pattern: 'opencode', tool: 'opencode', match: /\bopencode\b/ },
+    { pattern: 'claude', tool: 'claude', match: /\/claude\s|^claude\s|\bclaude\b/ },
+    { pattern: 'codex', tool: 'codex', match: /\/codex\s|^codex\s|codex app-server|\bcodex\b/ },
+    { pattern: 'opencode', tool: 'opencode', match: /\/opencode\s|^opencode\s|\bopencode\b/ },
     { pattern: 'kiro', tool: 'kiro', match: /kiro-cli/ },
     { pattern: 'cursor-agent', tool: 'cursor', match: /cursor-agent/ },
   ];
@@ -2760,8 +2760,12 @@ function getActiveSessions() {
       }
       if (!tool) continue;
 
-      // Skip node/npm/shell wrappers — only main processes
+      // Skip node/npm/shell wrappers, MCP servers, plugins — only main agent processes
       if (cmd.includes('node bin/cli') || cmd.includes('npm') || cmd.includes('grep')) continue;
+      if (cmd.includes('mcp-server') || cmd.includes('mcp_server') || cmd.includes('/mcp/') || cmd.includes('/mcp-servers/')) continue;
+      if (cmd.includes('/plugins/') || cmd.includes('plugin-') || cmd.includes('app-server-broker')) continue;
+      if (cmd.includes('.claude/') && !cmd.includes('claude ') && tool === 'claude') continue;
+      if (cmd.includes('.codex/') && !cmd.includes('codex ') && tool === 'codex') continue;
 
       seenPids.add(pid);
 

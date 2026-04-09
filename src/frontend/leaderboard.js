@@ -18,10 +18,18 @@ async function syncLeaderboard() {
 
 var _lbRemoteData = null;
 var _lbCurrentTab = 'today';
+var _lbSortBy = 'messages'; // messages, hours, cost
 
 function switchLbTab(tab, btn) {
   _lbCurrentTab = tab;
-  document.querySelectorAll('.lb-tab').forEach(function(t) { t.classList.remove('active'); });
+  document.querySelectorAll('.lb-tab:not(.lb-sort)').forEach(function(t) { t.classList.remove('active'); });
+  if (btn) btn.classList.add('active');
+  renderGlobalBoard();
+}
+
+function switchLbSort(sortBy, btn) {
+  _lbSortBy = sortBy;
+  document.querySelectorAll('.lb-sort').forEach(function(t) { t.classList.remove('active'); });
   if (btn) btn.classList.add('active');
   renderGlobalBoard();
 }
@@ -35,15 +43,13 @@ function renderGlobalBoard() {
     return;
   }
 
-  // Sort by tab
+  // Sort by tab + sort criterion
   var sorted = data.users.slice();
-  if (_lbCurrentTab === 'today') {
-    sorted.sort(function(a,b) { return (b.stats?.today?.messages||0) - (a.stats?.today?.messages||0); });
-  } else if (_lbCurrentTab === 'week') {
-    sorted.sort(function(a,b) { return (b.stats?.week?.messages||0) - (a.stats?.week?.messages||0); });
-  } else {
-    sorted.sort(function(a,b) { return (b.stats?.totals?.messages||0) - (a.stats?.totals?.messages||0); });
-  }
+  var getVal = function(u) {
+    var s = _lbCurrentTab === 'today' ? (u.stats?.today||{}) : _lbCurrentTab === 'week' ? (u.stats?.week||{}) : (u.stats?.totals||{});
+    return s[_lbSortBy] || 0;
+  };
+  sorted.sort(function(a,b) { return getVal(b) - getVal(a); });
 
   var html = '';
   sorted.forEach(function(u, i) {
@@ -264,6 +270,11 @@ async function renderLeaderboard(container) {
     html += '<button class="lb-tab active" onclick="switchLbTab(\'today\',this)">Today</button>';
     html += '<button class="lb-tab" onclick="switchLbTab(\'week\',this)">Week</button>';
     html += '<button class="lb-tab" onclick="switchLbTab(\'alltime\',this)">All Time</button>';
+    html += '<span style="margin-left:auto;display:flex;gap:4px;">';
+    html += '<button class="lb-tab lb-sort' + (_lbSortBy==='messages'?' active':'') + '" onclick="switchLbSort(\'messages\',this)" style="font-size:11px;padding:4px 8px;">Msgs</button>';
+    html += '<button class="lb-tab lb-sort' + (_lbSortBy==='hours'?' active':'') + '" onclick="switchLbSort(\'hours\',this)" style="font-size:11px;padding:4px 8px;">Hours</button>';
+    html += '<button class="lb-tab lb-sort' + (_lbSortBy==='cost'?' active':'') + '" onclick="switchLbSort(\'cost\',this)" style="font-size:11px;padding:4px 8px;">Cost</button>';
+    html += '</span>';
     html += '</div>';
     html += '<div id="globalBoard"><div class="loading">Loading...</div></div>';
 
