@@ -193,6 +193,9 @@ function setView(view) {
   } else if (view === 'opencode-only') {
     toolFilter = toolFilter === 'opencode' ? null : 'opencode';
     currentView = 'sessions';
+  } else if (view === 'droid-only') {
+    toolFilter = toolFilter === 'droid' ? null : 'droid';
+    currentView = 'sessions';
   } else {
     toolFilter = null;
     currentView = view;

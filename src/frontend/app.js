@@ -1785,6 +1785,12 @@ var AGENT_INSTALL = {
     alt: 'npm i -g opencode-ai@latest',
     url: 'https://opencode.ai',
   },
+  droid: {
+    name: 'Factory Droid',
+    cmd: 'curl -fsSL https://app.factory.ai/cli | sh',
+    alt: 'npm i -g droid',
+    url: 'https://factory.ai',
+  },
 };
 
 function installAgent(agent) {
