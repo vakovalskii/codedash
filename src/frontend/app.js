@@ -1785,6 +1785,12 @@ var AGENT_INSTALL = {
     alt: 'npm i -g opencode-ai@latest',
     url: 'https://opencode.ai',
   },
+  kilo: {
+    name: 'Kilo CLI',
+    cmd: 'npm i -g @kilocode/cli',
+    alt: null,
+    url: 'https://kilo.ai',
+  },
 };
 
 function installAgent(agent) {
