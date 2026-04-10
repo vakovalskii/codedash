@@ -5,9 +5,102 @@ const { execSync, execFileSync } = require('child_process');
 
 // ── Constants ──────────────────────────────────────────────
 
-// Detect WSL and find Windows user home for cross-OS data access
+function normalizeProjectPath(value) {
+  if (!value || typeof value !== 'string') return value || '';
+  let normalized = value.trim();
+  if (!normalized) return '';
+  if (/^\\\\\?\\UNC\\/i.test(normalized)) {
+    normalized = '\\\\' + normalized.slice(8);
+  } else if (/^\\\\\?\\[A-Za-z]:\\/i.test(normalized)) {
+    normalized = normalized.slice(4);
+  }
+  return normalized;
+}
+
+function parseWslDistroList(raw) {
+  const text = Buffer.isBuffer(raw)
+    ? raw.toString('utf16le').replace(/^\uFEFF/, '')
+    : String(raw || '').replace(/\0/g, '').replace(/^\uFEFF/, '');
+  return text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+function getWslDistroList(execFileSyncImpl = execFileSync) {
+  try {
+    return parseWslDistroList(execFileSyncImpl('wsl.exe', ['-l', '-q'], {
+      encoding: 'buffer',
+      timeout: 3000,
+      windowsHide: true,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    }));
+  } catch {
+    return [];
+  }
+}
+
+function getRunningWslDistroSet(execFileSyncImpl = execFileSync) {
+  try {
+    return new Set(parseWslDistroList(execFileSyncImpl('wsl.exe', ['--list', '--quiet', '--running'], {
+      encoding: 'buffer',
+      timeout: 3000,
+      windowsHide: true,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    })));
+  } catch {
+    return null;
+  }
+}
+
+function filterWslDistrosForProcessScan(distros, runningDistros) {
+  if (!Array.isArray(distros) || distros.length === 0) return [];
+  if (!(runningDistros instanceof Set)) return distros.slice();
+  return distros.filter((distro) => runningDistros.has(distro));
+}
+
+function buildWslUncPath(distro, linuxPath) {
+  if (!distro || !linuxPath || !linuxPath.startsWith('/')) return '';
+  return '\\\\wsl$\\' + distro + linuxPath.replace(/\//g, '\\');
+}
+
+function detectWindowsWslHomes() {
+  if (process.platform !== 'win32') return [];
+  const homes = [];
+  const distros = getWslDistroList();
+  for (const distro of distros) {
+    try {
+      const linuxHome = String(execFileSync('wsl.exe', ['-d', distro, 'sh', '-lc', 'printf %s "$HOME"'], {
+        encoding: 'utf8',
+        timeout: 3000,
+        windowsHide: true,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      }) || '').trim();
+      if (!linuxHome || !linuxHome.startsWith('/')) continue;
+      const uncHome = buildWslUncPath(distro, linuxHome);
+      if (!uncHome) continue;
+      const hasClaude = fs.existsSync(path.join(uncHome, '.claude'));
+      const hasCodex = fs.existsSync(path.join(uncHome, '.codex'));
+      if (hasClaude || hasCodex) homes.push(uncHome);
+    } catch {}
+  }
+  return homes;
+}
+
+// Detect cross-OS homes for session data access
 function detectHomes() {
-  const homes = [os.homedir()];
+  const homes = [];
+  const seen = new Set();
+  const addHome = (home) => {
+    const normalized = normalizeProjectPath(home);
+    if (!normalized) return;
+    const key = process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+    if (seen.has(key)) return;
+    seen.add(key);
+    homes.push(normalized);
+  };
+
+  addHome(os.homedir());
   // WSL: also check Windows-side home dirs
   if (process.platform === 'linux' && fs.existsSync('/mnt/c/Users')) {
     try {
@@ -16,21 +109,20 @@ function detectHomes() {
         // Convert C:\Users\foo to /mnt/c/Users/foo
         const drive = winUser[0].toLowerCase();
         const winPath = '/mnt/' + drive + winUser.slice(2).replace(/\\/g, '/');
-        if (fs.existsSync(winPath) && !homes.includes(winPath)) {
-          homes.push(winPath);
-        }
+        if (fs.existsSync(winPath)) addHome(winPath);
       }
     } catch {
       // Fallback: scan /mnt/c/Users/ for directories with .claude
       try {
         for (const u of fs.readdirSync('/mnt/c/Users')) {
           const candidate = '/mnt/c/Users/' + u;
-          if (fs.existsSync(path.join(candidate, '.claude'))) {
-            if (!homes.includes(candidate)) homes.push(candidate);
-          }
+          if (fs.existsSync(path.join(candidate, '.claude'))) addHome(candidate);
         }
       } catch {}
     }
+  }
+  if (process.platform === 'win32') {
+    for (const home of detectWindowsWslHomes()) addHome(home);
   }
   return homes;
 }
@@ -79,6 +171,34 @@ function readLines(filePath) {
   return fs.readFileSync(filePath, 'utf8').split('\n').map(l => l.replace(/\r$/, '')).filter(Boolean);
 }
 
+function shortenHomePath(value, homes = ALL_HOMES) {
+  value = normalizeProjectPath(value);
+  if (!value || typeof value !== 'string') return value || '';
+  const valueLower = value.toLowerCase();
+  for (const homeRaw of homes) {
+    const variants = [];
+    const normalizedHome = normalizeProjectPath(homeRaw);
+    if (normalizedHome) variants.push(normalizedHome);
+    const wslMatch = normalizedHome && normalizedHome.match(/^\/mnt\/([a-z])\/(.*)$/i);
+    if (wslMatch) {
+      variants.push(wslMatch[1].toUpperCase() + ':\\' + wslMatch[2].replace(/\//g, '\\'));
+    }
+    const uncWslMatch = normalizedHome && normalizedHome.match(/^\\\\wsl\$\\[^\\]+\\(.+)$/i);
+    if (uncWslMatch) {
+      variants.push('/' + uncWslMatch[1].replace(/\\/g, '/'));
+    }
+    for (const home of variants) {
+      const homeLower = home.toLowerCase();
+      if (valueLower === homeLower) return '~';
+      if (valueLower.startsWith(homeLower)) {
+        const nextChar = value.charAt(home.length);
+        if (nextChar !== '\\' && nextChar !== '/') continue;
+        return '~' + value.slice(home.length);
+      }
+    }
+  }
+  return value;
+}
 // OpenCode built-in tools that should NOT be treated as MCP servers
 const OPENCODE_BUILTIN_TOOLS = new Set([
   'read', 'write', 'edit', 'bash', 'glob', 'grep', 'task', 'todowrite',
@@ -2715,6 +2835,243 @@ function _computeCostAnalytics(sessions) {
 
 // ── Active sessions detection ─────────────────────────────
 
+const _winProcCpuCache = {};
+
+function getAgentToolFromCommand(cmd, agentPatterns) {
+  if (!cmd) return '';
+  for (const ap of agentPatterns) {
+    if (ap.match.test(cmd)) return ap.tool;
+  }
+  return '';
+}
+
+function parseSessionIdFromCommandLine(cmd) {
+  if (!cmd) return '';
+  const resumeMatch = cmd.match(/(?:--resume|(?:^|\s)resume)\s+([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i);
+  if (resumeMatch) return resumeMatch[1];
+  return '';
+}
+
+function parseWindowsCwdFromCommandLine(cmd) {
+  if (!cmd) return '';
+  const cdMatch = cmd.match(/\bcd(?:\s+\/d)?\s+"?([^"&]+?)"?\s*(?:&&|$)/i);
+  if (cdMatch && cdMatch[1]) return normalizeProjectPath(cdMatch[1].trim());
+  return '';
+}
+
+function parseWslProcessLine(line, distro) {
+  if (!line) return null;
+  const parts = String(line).split('\t');
+  if (parts.length < 7) return null;
+  const pid = parseInt(parts[0], 10);
+  const parentPid = parseInt(parts[1], 10) || 0;
+  if (!pid) return null;
+  const cpu = Number(parts[2]) || 0;
+  const rssKb = Number(parts[3]) || 0;
+  const elapsedSeconds = Number(parts[4]) || 0;
+  const cwd = normalizeProjectPath(parts[5] || '');
+  const commandLine = parts.slice(6).join('\t').trim();
+  return {
+    pid: `wsl:${distro}:${pid}`,
+    rawPid: pid,
+    parentPid: `wsl:${distro}:${parentPid}`,
+    rawParentPid: parentPid,
+    distro,
+    name: commandLine.split(/\s+/)[0] || '',
+    commandLine,
+    cwd,
+    ws: rssKb * 1024,
+    cpu,
+    startedAt: elapsedSeconds > 0 ? new Date(Date.now() - elapsedSeconds * 1000).toISOString() : '',
+  };
+}
+
+function parseWslPsSnapshotLine(line) {
+  if (!line) return null;
+  const match = String(line).trim().match(/^(\d+)\s+(\d+)\s+([0-9.]+)\s+(\d+)\s+(\d+)\s+(.*)$/);
+  if (!match) return null;
+  return {
+    rawPid: parseInt(match[1], 10),
+    rawParentPid: parseInt(match[2], 10) || 0,
+    cpu: Number(match[3]) || 0,
+    rssKb: Number(match[4]) || 0,
+    elapsedSeconds: Number(match[5]) || 0,
+    commandLine: match[6] || '',
+  };
+}
+
+function getWindowsProcessPriority(proc) {
+  const procName = (proc && proc.name ? proc.name : '').toLowerCase();
+  if (procName === 'claude.exe' || procName === 'codex.exe' || procName === 'opencode.exe') return 5;
+  if (procName === 'node.exe') return 4;
+  if (procName === 'cmd.exe' || procName === 'pwsh.exe' || procName === 'powershell.exe') return 2;
+  return 3;
+}
+
+function parseWindowsProcessStartedAt(proc) {
+  if (!proc || !proc.startedAt) return 0;
+  const ts = Date.parse(proc.startedAt);
+  return Number.isFinite(ts) ? ts : 0;
+}
+
+function getRelevantWindowsRootPid(proc, procByPid) {
+  const visited = new Set();
+  let current = proc;
+  let rootPid = proc ? proc.pid : 0;
+  while (current && current.parentPid && procByPid[current.parentPid] && !visited.has(current.parentPid)) {
+    visited.add(current.parentPid);
+    current = procByPid[current.parentPid];
+    rootPid = current.pid;
+  }
+  return rootPid;
+}
+
+function estimateWindowsCpuPercent(pid, cpuSeconds) {
+  const now = Date.now();
+  const prev = _winProcCpuCache[pid];
+  _winProcCpuCache[pid] = { cpuSeconds: cpuSeconds, ts: now };
+  if (!prev || !Number.isFinite(cpuSeconds)) return 0;
+  const deltaCpuMs = (cpuSeconds - prev.cpuSeconds) * 1000;
+  const deltaWallMs = now - prev.ts;
+  if (deltaCpuMs <= 0 || deltaWallMs <= 0) return 0;
+  const cpuCount = Math.max(1, os.cpus().length);
+  return Math.max(0, Math.min(100, (deltaCpuMs * 100) / (deltaWallMs * cpuCount)));
+}
+
+function getWindowsAgentProcesses() {
+  const psScript = [
+    "$ErrorActionPreference='SilentlyContinue'",
+    "$pattern='claude|codex|opencode|kiro-cli|cursor-agent'",
+    "$items=@(",
+    "  Get-CimInstance Win32_Process |",
+    "    Where-Object { $_.CommandLine -and $_.CommandLine -match $pattern } |",
+    "    ForEach-Object {",
+    "      $p = Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue",
+    "      $cpu = 0",
+    "      $ws = 0",
+    "      $startedAt = ''",
+    "      if ($p) {",
+    "        if ($null -ne $p.CPU) { $cpu = [double]$p.CPU }",
+    "        if ($null -ne $p.WorkingSet64) { $ws = [int64]$p.WorkingSet64 }",
+    "        try { $startedAt = $p.StartTime.ToUniversalTime().ToString('o') } catch {}",
+    "      }",
+    "      [PSCustomObject]@{",
+    "        pid = [int]$_.ProcessId",
+    "        parentPid = [int]$_.ParentProcessId",
+    "        name = $_.Name",
+    "        commandLine = $_.CommandLine",
+    "        ws = $ws",
+    "        cpu = $cpu",
+    "        startedAt = $startedAt",
+    "      }",
+    "    }",
+    ")",
+    "$items | ConvertTo-Json -Compress -Depth 3",
+  ].join('\n');
+
+  try {
+    const raw = execFileSync('powershell.exe', [
+      '-NoProfile',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-Command',
+      psScript,
+    ], {
+      encoding: 'utf8',
+      timeout: 5000,
+      windowsHide: true,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      maxBuffer: 10 * 1024 * 1024,
+    }).trim();
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [parsed];
+  } catch {
+    return [];
+  }
+}
+
+function getWslAgentProcesses() {
+  if (process.platform !== 'win32') return [];
+  const processes = [];
+  const distros = getWslDistroList();
+  if (distros.length === 0) return [];
+  const runningDistros = getRunningWslDistroSet();
+  const scanDistros = filterWslDistrosForProcessScan(distros, runningDistros);
+  if (scanDistros.length === 0) return [];
+
+  for (const distro of scanDistros) {
+    try {
+      const raw = execFileSync('wsl.exe', ['-d', distro, '--', 'ps', '-eo', 'pid=,ppid=,pcpu=,rss=,etimes=,args='], {
+        encoding: 'utf8',
+        timeout: 5000,
+        windowsHide: true,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        maxBuffer: 10 * 1024 * 1024,
+      });
+      for (const line of raw.split(/\r?\n/)) {
+        const parsed = parseWslPsSnapshotLine(line);
+        if (!parsed) continue;
+        const cmd = parsed.commandLine || '';
+        if (!/(claude|codex|opencode|kiro-cli|cursor-agent)/i.test(cmd)) continue;
+        if (/(grep|awk|codedash)/i.test(cmd)) continue;
+        let cwd = '';
+        try {
+          cwd = normalizeProjectPath(String(execFileSync('wsl.exe', ['-d', distro, '--', 'readlink', `/proc/${parsed.rawPid}/cwd`], {
+            encoding: 'utf8',
+            timeout: 2000,
+            windowsHide: true,
+            stdio: ['pipe', 'pipe', 'pipe'],
+          }) || '').trim());
+        } catch {}
+        const proc = parseWslProcessLine([
+          parsed.rawPid,
+          parsed.rawParentPid,
+          parsed.cpu,
+          parsed.rssKb,
+          parsed.elapsedSeconds,
+          cwd,
+          cmd,
+        ].join('\t'), distro);
+        if (proc) processes.push(proc);
+      }
+    } catch {}
+  }
+  return processes;
+}
+
+function resolveWslActiveSession(proc, tool, allSessions, latestByToolProject) {
+  let sessionId = parseSessionIdFromCommandLine(proc.commandLine || '');
+  let cwd = proc.cwd || '';
+  let sessionSource = sessionId ? 'cmdline' : '';
+  const startedAt = parseWindowsProcessStartedAt(proc);
+
+  if (!sessionId && cwd) {
+    const projectKey = tool + '|' + cwd.toLowerCase();
+    if (latestByToolProject[projectKey]) {
+      sessionId = latestByToolProject[projectKey].id;
+      sessionSource = 'cwd-match';
+    }
+  }
+
+  if (!cwd && sessionId) {
+    const sessionMatch = allSessions.find((session) => session.id === sessionId);
+    if (sessionMatch) cwd = sessionMatch.project || '';
+  }
+
+  if (!sessionId) {
+    sessionId = `wsl-proc:${proc.distro}:${proc.rawPid}`;
+    sessionSource = 'wsl-proc';
+  }
+
+  return {
+    sessionId,
+    cwd,
+    sessionSource,
+    startedAt,
+    unassociated: !allSessions.find((session) => session.id === sessionId),
+  };
+}
 function getActiveSessions() {
   const active = [];
   const seenPids = new Set();
@@ -2741,8 +3098,210 @@ function getActiveSessions() {
     { pattern: 'cursor-agent', tool: 'cursor', match: /cursor-agent/ },
   ];
 
-  // Skip process scanning on Windows (no ps/grep)
-  if (process.platform === 'win32') return active;
+  if (process.platform === 'win32') {
+    const allS = loadSessions();
+    const latestByTool = {};
+    const latestByToolProject = {};
+    for (const s of allS) {
+      if (!latestByTool[s.tool] || latestByTool[s.tool].last_ts < s.last_ts) latestByTool[s.tool] = s;
+      const projectKey = (s.project || '').toLowerCase();
+      if (!projectKey) continue;
+      const key = s.tool + '|' + projectKey;
+      if (!latestByToolProject[key] || latestByToolProject[key].last_ts < s.last_ts) latestByToolProject[key] = s;
+    }
+
+    const rawProcesses = getWindowsAgentProcesses();
+    const relevantProcesses = [];
+    const procByPid = {};
+    for (const proc of rawProcesses) {
+      const pid = parseInt(proc.pid);
+      if (!pid || seenPids.has(pid)) continue;
+
+      const cmd = proc.commandLine || '';
+      const tool = getAgentToolFromCommand((proc.name || '') + ' ' + cmd, agentPatterns);
+      if (!tool) continue;
+      if (cmd && cmd.includes('codedash')) continue;
+
+      const normalized = {
+        pid: pid,
+        parentPid: parseInt(proc.parentPid) || 0,
+        name: proc.name || '',
+        commandLine: cmd,
+        ws: Number(proc.ws) || 0,
+        cpu: Number(proc.cpu) || 0,
+        startedAt: proc.startedAt || '',
+        tool: tool,
+      };
+      relevantProcesses.push(normalized);
+      procByPid[pid] = normalized;
+    }
+
+    const groups = {};
+    for (const proc of relevantProcesses) {
+      const rootPid = getRelevantWindowsRootPid(proc, procByPid);
+      if (!groups[rootPid]) groups[rootPid] = [];
+      groups[rootPid].push(proc);
+    }
+
+    const bestByKey = {};
+    const sourceRank = { 'pid-file': 4, 'cmdline': 3, 'cwd-match': 2, 'fallback-latest': 1, '': 0 };
+
+    for (const group of Object.values(groups)) {
+      group.sort((left, right) => {
+        const rightPriority = getWindowsProcessPriority(right);
+        const leftPriority = getWindowsProcessPriority(left);
+        if (rightPriority !== leftPriority) return rightPriority - leftPriority;
+        return (Number(right.ws) || 0) - (Number(left.ws) || 0);
+      });
+
+      const primaryProc = group[0];
+      const tool = primaryProc.tool;
+      let sessionId = '';
+      let cwd = '';
+      let startedAt = 0;
+      let sessionSource = '';
+
+      for (const proc of group) {
+        if (claudePidMap[proc.pid]) {
+          sessionId = claudePidMap[proc.pid].sessionId || sessionId;
+          cwd = claudePidMap[proc.pid].cwd || cwd;
+          startedAt = claudePidMap[proc.pid].startedAt || startedAt;
+          if (sessionId) {
+            sessionSource = 'pid-file';
+            break;
+          }
+        }
+      }
+
+      if (!sessionId) {
+        for (const proc of group) {
+          const fromCmd = parseSessionIdFromCommandLine(proc.commandLine || '');
+          if (fromCmd) {
+            sessionId = fromCmd;
+            sessionSource = 'cmdline';
+            break;
+          }
+        }
+      }
+
+      if (!cwd) {
+        for (const proc of group.slice().reverse()) {
+          const fromCmd = parseWindowsCwdFromCommandLine(proc.commandLine || '');
+          if (fromCmd) {
+            cwd = fromCmd;
+            break;
+          }
+        }
+      }
+
+      if (!startedAt) {
+        for (const proc of group) {
+          startedAt = parseWindowsProcessStartedAt(proc);
+          if (startedAt) break;
+        }
+      }
+
+      if (!sessionId && cwd) {
+        const projectKey = tool + '|' + cwd.toLowerCase();
+        if (latestByToolProject[projectKey]) {
+          sessionId = latestByToolProject[projectKey].id;
+          sessionSource = 'cwd-match';
+        }
+      }
+
+      if (!cwd && sessionId) {
+        const sessionMatch = allS.find((session) => session.id === sessionId);
+        if (sessionMatch) cwd = sessionMatch.project || '';
+      }
+
+      if (!sessionId && latestByTool[tool]) {
+        sessionId = latestByTool[tool].id;
+        if (!cwd) cwd = latestByTool[tool].project || '';
+        sessionSource = 'fallback-latest';
+      }
+
+      const chosenProc = group.find((proc) => {
+        const procName = (proc.name || '').toLowerCase();
+        return procName !== 'cmd.exe' && procName !== 'pwsh.exe' && procName !== 'powershell.exe';
+      }) || primaryProc;
+
+      const cpu = estimateWindowsCpuPercent(chosenProc.pid, Number(chosenProc.cpu) || 0);
+      const status = cpu < 0.5 ? 'waiting' : 'active';
+      const dedupeKey = sessionId ? (tool + ':' + sessionId) : (tool + ':pid:' + chosenProc.pid);
+      const candidate = {
+        pid: chosenProc.pid,
+        sessionId: sessionId,
+        cwd: cwd,
+        startedAt: startedAt,
+        kind: tool,
+        entrypoint: tool,
+        status: status,
+        cpu: Math.round(cpu * 10) / 10,
+        memoryMB: Math.round((Number(chosenProc.ws) || 0) / (1024 * 1024)),
+        _sessionSource: sessionSource,
+      };
+
+      const existing = bestByKey[dedupeKey];
+      const candidateRank = sourceRank[candidate._sessionSource] || 0;
+      const existingRank = existing ? (sourceRank[existing._sessionSource] || 0) : -1;
+      const candidateScore = candidateRank * 1000000 + (candidate.memoryMB || 0) * 1000 + (candidate.cpu || 0);
+      const existingScore = existing ? (existingRank * 1000000 + (existing.memoryMB || 0) * 1000 + (existing.cpu || 0)) : -1;
+      if (!existing || candidateScore > existingScore) {
+        bestByKey[dedupeKey] = candidate;
+      }
+    }
+
+    for (const item of Object.values(bestByKey)) {
+      active.push(item);
+    }
+
+    const wslProcesses = getWslAgentProcesses();
+    const wslBestByKey = {};
+    for (const proc of wslProcesses) {
+      const tool = getAgentToolFromCommand(proc.commandLine || '', agentPatterns);
+      if (!tool) continue;
+      const resolved = resolveWslActiveSession(proc, tool, allS, latestByToolProject);
+      const sessionId = resolved.sessionId;
+      const cwd = resolved.cwd;
+      const sessionSource = resolved.sessionSource;
+      const startedAt = resolved.startedAt;
+
+      const status = proc.cpu < 0.5 ? 'waiting' : 'active';
+      const dedupeKey = sessionId
+        ? (tool + ':' + sessionId)
+        : (cwd ? tool + ':cwd:' + cwd.toLowerCase() : tool + ':pid:' + proc.pid);
+      const candidate = {
+        pid: proc.pid,
+        sessionId,
+        cwd,
+        startedAt,
+        kind: tool,
+        entrypoint: tool + ' (WSL)',
+        status,
+        cpu: Math.round((proc.cpu || 0) * 10) / 10,
+        memoryMB: Math.round((Number(proc.ws) || 0) / (1024 * 1024)),
+        _sessionSource: sessionSource || 'wsl-proc',
+        _focusUnsupported: true,
+        _runtime: 'wsl',
+        _distro: proc.distro,
+        _unassociated: resolved.unassociated,
+      };
+
+      const existing = wslBestByKey[dedupeKey];
+      const sourceRank = { 'cmdline': 3, 'cwd-match': 2, 'wsl-proc': 1 };
+      const candidateRank = sourceRank[candidate._sessionSource] || 0;
+      const existingRank = existing ? (sourceRank[existing._sessionSource] || 0) : -1;
+      const candidateScore = candidateRank * 1000000 + (candidate.memoryMB || 0) * 1000 + (candidate.cpu || 0);
+      const existingScore = existing ? (existingRank * 1000000 + (existing.memoryMB || 0) * 1000 + (existing.cpu || 0)) : -1;
+      if (!existing || candidateScore > existingScore) {
+        wslBestByKey[dedupeKey] = candidate;
+      }
+    }
+
+    for (const item of Object.values(wslBestByKey)) active.push(item);
+
+    return active;
+  }
 
   try {
     const psOut = execSync(
@@ -3122,4 +3681,18 @@ module.exports = {
   KIRO_DB,
   HISTORY_FILE,
   PROJECTS_DIR,
+  __test: {
+    parseWslDistroList,
+    getWslDistroList,
+    getRunningWslDistroSet,
+    filterWslDistrosForProcessScan,
+    buildWslUncPath,
+    parseWslProcessLine,
+    parseWslPsSnapshotLine,
+    resolveWslActiveSession,
+    normalizeProjectPath,
+    shortenHomePath,
+    parseSessionIdFromCommandLine,
+    parseWindowsCwdFromCommandLine,
+  },
 };
