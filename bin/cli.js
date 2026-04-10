@@ -1,5 +1,13 @@
 #!/usr/bin/env node
 
+// Node.js version check — codedash requires Node >= 18
+var nodeVersion = parseInt(process.versions.node.split('.')[0], 10);
+if (nodeVersion < 18) {
+  console.error('\n  codedash requires Node.js >= 18 (you have ' + process.version + ')');
+  console.error('  Install latest: https://nodejs.org/\n');
+  process.exit(1);
+}
+
 const { loadSessions, searchFullText, getSessionPreview, computeSessionCost } = require('../src/data');
 const { startServer } = require('../src/server');
 const { exportArchive, importArchive } = require('../src/migrate');
@@ -31,7 +39,7 @@ switch (command) {
     console.log(`\n  \x1b[36m\x1b[1m${sessions.length} sessions\x1b[0m across ${new Set(sessions.map(s => s.project)).size} projects\n`);
     for (const s of sessions.slice(0, limit)) {
       const tool = s.tool === 'codex' ? '\x1b[36mcodex\x1b[0m' : '\x1b[34mclaude\x1b[0m';
-      const msg = (s.first_message || '').slice(0, 50).padEnd(50);
+      const msg = (s.session_name || s.first_message || '').slice(0, 50).padEnd(50);
       const proj = s.project_short || '';
       console.log(`  ${tool}  ${s.id.slice(0, 12)}  ${s.last_time}  ${msg}  \x1b[2m${proj}\x1b[0m`);
     }

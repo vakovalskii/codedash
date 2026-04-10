@@ -28,6 +28,7 @@ let stars = JSON.parse(localStorage.getItem('codedash-stars') || '[]');
 let tags = JSON.parse(localStorage.getItem('codedash-tags') || '{}');
 let sessionTitles = JSON.parse(localStorage.getItem('codedash-titles') || '{}');
 let showAITitles = localStorage.getItem('codedash-ai-titles') !== 'false';
+let showAllSessionsListBadges = localStorage.getItem('codedash-all-sessions-list-badges') !== 'false';
 
 // ── Color palette for projects ─────────────────────────────────
 
@@ -90,6 +91,11 @@ function getSessionGroupInfo(session) {
   return { key: name, name: name };
 }
 
+function getSessionDisplayName(session) {
+  if (!session) return '';
+  return session.session_name || session.first_message || '';
+}
+
 // ── Utilities ──────────────────────────────────────────────────
 
 function timeAgo(dateStr) {
@@ -120,6 +126,43 @@ function showToast(msg) {
   el.textContent = msg;
   el.classList.add('show');
   setTimeout(() => el.classList.remove('show'), 2500);
+}
+
+function fallbackCopyText(text) {
+  try {
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.top = '-9999px';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    var ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return ok;
+  } catch (e) {
+    return false;
+  }
+}
+
+function copyText(text, successMsg) {
+  var done = function() {
+    showToast(successMsg || ('Copied: ' + text));
+    return true;
+  };
+  var fail = function() {
+    if (fallbackCopyText(text)) return done();
+    prompt('Copy this command:', text);
+    showToast(window.isSecureContext ? 'Clipboard copy failed' : 'Clipboard unavailable on non-secure origin');
+    return false;
+  };
+
+  if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+    return navigator.clipboard.writeText(text).then(done).catch(fail);
+  }
+  return Promise.resolve(fail());
 }
 
 function formatBytes(bytes) {
@@ -281,6 +324,12 @@ function toggleStar(id) {
   else stars.push(id);
   localStorage.setItem('codedash-stars', JSON.stringify(stars));
   render();
+  var detailBtn = document.querySelector('.detail-star');
+  if (detailBtn) {
+    var nowStarred = stars.indexOf(id) >= 0;
+    detailBtn.className = 'star-btn detail-star' + (nowStarred ? ' active' : '');
+    detailBtn.innerHTML = '&#9733; ' + (nowStarred ? 'Starred' : 'Star');
+  }
 }
 
 // ── AI Titles ─────────────────────────────────────────────────
@@ -288,6 +337,12 @@ function toggleStar(id) {
 function toggleAITitles(checked) {
   showAITitles = checked;
   localStorage.setItem('codedash-ai-titles', checked ? 'true' : 'false');
+  render();
+}
+
+function toggleAllSessionsListBadges(checked) {
+  showAllSessionsListBadges = checked;
+  localStorage.setItem('codedash-all-sessions-list-badges', checked ? 'true' : 'false');
   render();
 }
 
@@ -545,6 +600,7 @@ function trigramScore(query, text) {
 function searchScore(query, session) {
   var q = query.toLowerCase();
   var fields = [
+    session.session_name || '',
     session.first_message || '',
     session.project_short || '',
     session.project || '',
@@ -683,11 +739,12 @@ function renderCard(s, idx) {
   }
   html += '</div>';
   var aiTitle = showAITitles && sessionTitles[s.id];
+  var displayName = getSessionDisplayName(s);
   if (aiTitle) {
     html += '<div class="card-title">' + escHtml(aiTitle) + '</div>';
-    html += '<div class="card-body card-body-sub">' + escHtml((s.first_message || '').slice(0, 80)) + '</div>';
+    html += '<div class="card-body card-body-sub">' + escHtml(displayName.slice(0, 80)) + '</div>';
   } else {
-    html += '<div class="card-body">' + escHtml((s.first_message || '').slice(0, 120)) + '</div>';
+    html += '<div class="card-body">' + escHtml(displayName.slice(0, 120)) + '</div>';
   }
   html += '<div class="card-footer">';
   html += '<span class="card-meta">' + s.messages + ' msgs</span>';
@@ -748,6 +805,7 @@ function renderListCard(s, idx) {
   var isFocused = focusedIndex === idx;
   var projName = getProjectName(s.project);
   var projColor = getProjectColor(projName);
+  var showBadges = showAllSessionsListBadges;
 
   var classes = 'list-row';
   if (isSelected) classes += ' selected';
@@ -756,18 +814,18 @@ function renderListCard(s, idx) {
   var html = '<div class="' + classes + '" data-id="' + s.id + '" onclick="onCardClick(\'' + s.id + '\', event)">';
   var listToolLabel = s.tool === 'claude-ext' ? 'claude ext' : s.tool;
   html += '<span class="tool-badge tool-' + s.tool + '">' + escHtml(listToolLabel) + '</span>';
-  if (s.mcp_servers && s.mcp_servers.length > 0) {
+  if (showBadges && s.mcp_servers && s.mcp_servers.length > 0) {
     s.mcp_servers.forEach(function(m) {
       html += '<span class="tool-badge badge-mcp">' + escHtml(m) + '</span>';
     });
   }
-  if (s.skills && s.skills.length > 0) {
+  if (showBadges && s.skills && s.skills.length > 0) {
     s.skills.forEach(function(sk) {
       html += '<span class="tool-badge badge-skill">' + escHtml(sk) + '</span>';
     });
   }
   html += '<span class="list-project" style="color:' + projColor + '">' + escHtml(projName) + '</span>';
-  html += '<span class="list-msg">' + escHtml((s.first_message || '').slice(0, 80)) + '</span>';
+  html += '<span class="list-msg">' + escHtml(getSessionDisplayName(s).slice(0, 80)) + '</span>';
   html += '<span class="list-meta">' + s.messages + ' msgs</span>';
   html += '<span class="list-time">' + timeAgo(s.last_ts) + '</span>';
   html += '<button class="star-btn' + (isStarred ? ' active' : '') + '" onclick="event.stopPropagation();toggleStar(\'' + s.id + '\')">&#9733;</button>';
@@ -1066,7 +1124,7 @@ function renderQACard(s, idx) {
 
   var html = '<div class="' + classes + '" data-id="' + s.id + '" onclick="onCardClick(\'' + s.id + '\', event)">';
   html += '<span class="tool-badge ' + toolClass + '">' + escHtml(toolLabel) + '</span>';
-  html += '<span class="qa-question">' + escHtml((s.first_message || '').slice(0, 160)) + '</span>';
+  html += '<span class="qa-question">' + escHtml(getSessionDisplayName(s).slice(0, 160)) + '</span>';
   html += '<span class="qa-meta">';
   html += '<span class="qa-msgs">' + s.messages + ' msgs</span>';
   if (costStr) html += '<span class="cost-badge">' + costStr + '</span>';
@@ -1161,6 +1219,7 @@ async function confirmDelete() {
       if (searchQuery) {
         var remaining = allSessions.filter(function(s) {
           return (s.project || '').toLowerCase().indexOf(searchQuery.toLowerCase()) >= 0 ||
+                 (s.session_name || '').toLowerCase().indexOf(searchQuery.toLowerCase()) >= 0 ||
                  (s.first_message || '').toLowerCase().indexOf(searchQuery.toLowerCase()) >= 0;
         });
         if (remaining.length === 0) {
@@ -1407,7 +1466,8 @@ function renderRunningCard(a, s) {
   html += '<div class="running-stat"><span class="running-stat-val">' + a.memoryMB + 'MB</span><span class="running-stat-label">MEM</span></div>';
   if (uptime) html += '<div class="running-stat"><span class="running-stat-val">' + uptime + '</span><span class="running-stat-label">Uptime</span></div>';
   html += '</div>';
-  if (s && s.first_message) html += '<div class="running-msg">' + escHtml(s.first_message.slice(0, 120)) + '</div>';
+  var displayName = getSessionDisplayName(s);
+  if (displayName) html += '<div class="running-msg">' + escHtml(displayName.slice(0, 120)) + '</div>';
   html += '<div class="running-actions">';
   html += '<button class="launch-btn" style="background:var(--accent-green);color:#000" onclick="focusSession(\'' + sid + '\')">Focus</button>';
   if (s) {
@@ -1428,7 +1488,8 @@ function renderDoneCard(s) {
   html += '<span class="running-project" style="color:' + projColor + '">' + escHtml(projName) + '</span>';
   html += '<span class="running-tool tool-' + (s.tool || 'claude') + '">' + escHtml(s.tool || 'claude') + '</span>';
   html += '</div>';
-  if (s.first_message) html += '<div class="running-msg">' + escHtml(s.first_message.slice(0, 120)) + '</div>';
+  var displayName = getSessionDisplayName(s);
+  if (displayName) html += '<div class="running-msg">' + escHtml(displayName.slice(0, 120)) + '</div>';
   html += '<div class="running-stats">';
   html += '<div class="running-stat"><span class="running-stat-val">' + (s.messages || 0) + '</span><span class="running-stat-label">msgs</span></div>';
   if (s.last_time) html += '<div class="running-stat"><span class="running-stat-val">' + s.last_time.slice(11) + '</span><span class="running-stat-label">ended</span></div>';
@@ -1534,6 +1595,7 @@ function renderSettings(container) {
   var savedTheme = localStorage.getItem('codedash-theme') || 'dark';
   var savedTerminal = localStorage.getItem('codedash-terminal') || '';
   var aiTitlesOn = localStorage.getItem('codedash-ai-titles') === 'true';
+  var allSessionsListBadgesOn = localStorage.getItem('codedash-all-sessions-list-badges') !== 'false';
   var savedGroupingMode = normalizeGroupingMode(localStorage.getItem('codedash-grouping-mode'));
 
   var html = '<div class="settings-page">';
@@ -1570,6 +1632,15 @@ function renderSettings(container) {
   html += '<div class="settings-checkbox">';
   html += '<input type="checkbox" id="settingsAiToggle"' + (aiTitlesOn ? ' checked' : '') + ' onchange="toggleAITitles(this.checked)">';
   html += '<span style="font-size:13px;color:var(--text-secondary)">Show generated titles</span>';
+  html += '</div>';
+  html += '</div>';
+
+  // All Sessions list badges
+  html += '<div class="settings-group">';
+  html += '<label class="settings-label">Session List Badges</label>';
+  html += '<div class="settings-checkbox">';
+  html += '<input type="checkbox" id="settingsAllSessionsBadgesToggle"' + (allSessionsListBadgesOn ? ' checked' : '') + ' onchange="toggleAllSessionsListBadges(this.checked)">';
+  html += '<span style="font-size:13px;color:var(--text-secondary)">Show MCP and Skills badges in list-view session rows</span>';
   html += '</div>';
   html += '</div>';
 
@@ -1740,7 +1811,7 @@ function installAgent(agent) {
 
   var overlay = document.getElementById('confirmOverlay');
   document.getElementById('confirmTitle').textContent = 'Install ' + info.name;
-  var html = '<code style="display:block;margin:8px 0;padding:10px;background:var(--bg-card);border-radius:6px;font-size:13px;cursor:pointer" onclick="navigator.clipboard.writeText(\'' + info.cmd.replace(/'/g, "\\'") + '\');document.querySelector(\'#toast\').textContent=\'Copied!\';document.querySelector(\'#toast\').classList.add(\'show\');setTimeout(function(){document.querySelector(\'#toast\').classList.remove(\'show\')},1500)">' + escHtml(info.cmd) + '</code>';
+  var html = '<code style="display:block;margin:8px 0;padding:10px;background:var(--bg-card);border-radius:6px;font-size:13px;cursor:pointer" onclick="copyText(\'' + info.cmd.replace(/'/g, "\\'") + '\', \'Copied!\')">' + escHtml(info.cmd) + '</code>';
   if (info.alt) {
     html += '<span style="font-size:11px;color:var(--text-muted)">or: <code>' + escHtml(info.alt) + '</code></span><br>';
   }
@@ -1750,9 +1821,7 @@ function installAgent(agent) {
   document.getElementById('confirmAction').textContent = 'Copy Install Command';
   document.getElementById('confirmAction').className = 'launch-btn btn-primary';
   document.getElementById('confirmAction').onclick = function() {
-    navigator.clipboard.writeText(info.cmd).then(function() {
-      showToast('Copied: ' + info.cmd);
-    });
+    copyText(info.cmd, 'Copied: ' + info.cmd);
     closeConfirm();
   };
   if (overlay) overlay.style.display = 'flex';
@@ -1774,9 +1843,7 @@ function showExportDialog() {
   document.getElementById('confirmAction').textContent = 'Copy Export Command';
   document.getElementById('confirmAction').className = 'launch-btn btn-primary';
   document.getElementById('confirmAction').onclick = function() {
-    navigator.clipboard.writeText('codedash export').then(function() {
-      showToast('Copied: codedash export');
-    });
+    copyText('codedash export', 'Copied: codedash export');
     closeConfirm();
   };
   if (overlay) overlay.style.display = 'flex';
@@ -1807,9 +1874,7 @@ async function checkForUpdates() {
         badge.classList.add('update-available');
         badge.title = 'Click to copy update command';
         badge.onclick = function() {
-          navigator.clipboard.writeText('npm i -g codedash-app@latest').then(function() {
-            showToast('Copied: npm i -g codedash-app@latest');
-          });
+          copyText('npm i -g codedash-app@latest', 'Copied: npm i -g codedash-app@latest');
         };
       }
       var banner = document.getElementById('updateBanner');
@@ -1825,9 +1890,7 @@ async function checkForUpdates() {
 
 function copyUpdate() {
   var cmd = 'codedash update && codedash restart';
-  navigator.clipboard.writeText(cmd).then(function() {
-    showToast('Copied: ' + cmd + '  (run in terminal)');
-  });
+  copyText(cmd, 'Copied: ' + cmd + '  (run in terminal)');
 }
 
 function dismissUpdate() {
