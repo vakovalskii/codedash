@@ -1869,6 +1869,12 @@ var AGENT_INSTALL = {
     alt: null,
     url: 'https://kilo.ai',
   },
+  'copilot-chat': {
+    name: 'Copilot Chat (VS Code)',
+    cmd: null,
+    alt: null,
+    url: 'https://github.com/features/copilot',
+  },
 };
 
 function installAgent(agent) {

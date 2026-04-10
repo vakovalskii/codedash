@@ -1222,6 +1222,11 @@ body {
     color: #34d399;
 }
 
+.tool-copilot-chat {
+    background: rgba(110, 84, 148, 0.15);
+    color: #8b6fc0;
+}
+
 /* ── MCP / Skill badges ──────────────────────────────────────── */
 
 .badge-mcp {
