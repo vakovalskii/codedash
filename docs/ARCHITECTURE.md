@@ -2,7 +2,7 @@
 
 ## Overview
 
-CodeDash is a zero-dependency Node.js dashboard for AI coding agent sessions. Supports 7 agents: Claude Code, Claude Extension, Codex, Cursor, OpenCode, Kiro, Copilot. Single process serves a web UI at `localhost:3847`.
+CodeDash is a zero-dependency Node.js dashboard for AI coding agent sessions. Supports 7 agents: Claude Code, Claude Extension, Codex, Cursor, OpenCode, Kiro, Copilot Chat. Single process serves a web UI at `localhost:3847`.
 
 ```
 Browser (localhost:3847)            Node.js Server
@@ -198,7 +198,7 @@ FROM conversations_v2 ORDER BY updated_at DESC
 }
 ```
 
-### 7. Copilot (VS Code Extension)
+### 7. Copilot Chat (VS Code Extension)
 
 | Item | Location |
 |------|----------|
@@ -244,7 +244,7 @@ FROM conversations_v2 ORDER BY updated_at DESC
 3. scanOpenCodeSessions() → merge (tool: "opencode")
 4. scanCursorSessions() → merge (tool: "cursor")
 5. scanKiroSessions() → merge (tool: "kiro")
-5a. scanCopilotSessions() → merge (tool: "copilot")
+5a. scanCopilotSessions() → merge (tool: "copilot-chat")
 6. Enrich Claude sessions with detail files:
    - Count messages, get file size
    - Check entrypoint → change tool to "claude-ext" if not "cli"

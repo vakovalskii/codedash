@@ -19,7 +19,7 @@ npm i -g codedash-app && codedash run
 | Cursor | JSONL | LIVE/WAITING | - | 在 Cursor 中打开 |
 | OpenCode | SQLite | LIVE/WAITING | - | 终端 |
 | Kiro CLI | SQLite | LIVE/WAITING | - | 终端 |
-| Copilot | JSON/JSONL | - | - | - |
+| Copilot Chat | JSON/JSONL | - | - | - |
 
 ## 功能
 

@@ -2,7 +2,7 @@
 
 ## What is this
 
-CodeDash (`codedash-app` on npm) is a zero-dependency Node.js browser dashboard for managing AI coding agent sessions. Supports 6 agents: Claude Code, Codex, Cursor, OpenCode, Kiro CLI, Copilot. Single `npm i -g codedash-app && codedash run` opens a local web UI.
+CodeDash (`codedash-app` on npm) is a zero-dependency Node.js browser dashboard for managing AI coding agent sessions. Supports 6 agents: Claude Code, Codex, Cursor, OpenCode, Kiro CLI, Copilot Chat. Single `npm i -g codedash-app && codedash run` opens a local web UI.
 
 ## Project structure
 
@@ -36,7 +36,7 @@ docs/
 | Cursor | JSONL | `~/.cursor/projects/*/agent-transcripts/` | `{role, message: {content}}` |
 | OpenCode | SQLite | `~/.local/share/opencode/opencode.db` | tables: session, message, part |
 | Kiro CLI | SQLite | `~/Library/Application Support/kiro-cli/data.sqlite3` | table: conversations_v2 |
-| Copilot | JSON/JSONL | `~/.config/Code/User/workspaceStorage/*/chatSessions/` | `{version, requests: [{message, response}]}` |
+| Copilot Chat | JSON/JSONL | `~/.config/Code/User/workspaceStorage/*/chatSessions/` | `{version, requests: [{message, response}]}` |
 
 ## Key architecture decisions
 

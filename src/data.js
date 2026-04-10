@@ -862,7 +862,7 @@ function scanCopilotSessions() {
       const sessionId = 'copilot-' + file.replace(/\.(json|jsonl)$/, '');
       sessions.push({
         id: sessionId,
-        tool: 'copilot',
+        tool: 'copilot-chat',
         project: folder,
         project_short: folder.replace(os.homedir(), '~'),
         first_ts: creationDate || stat.birthtimeMs || stat.mtimeMs,
@@ -2047,7 +2047,7 @@ function loadSessionDetail(sessionId, project) {
   }
 
   // Copilot Chat (JSON/JSONL)
-  if (found.format === 'copilot') {
+  if (found.format === 'copilot-chat') {
     return loadCopilotDetail(sessionId);
   }
 
@@ -2320,7 +2320,7 @@ function _buildSessionFileIndex() {
             if (f.endsWith('.json') || f.endsWith('.jsonl')) {
               const sid = 'copilot-' + f.replace(/\.(json|jsonl)$/, '');
               if (!_sessionFileIndex[sid]) {
-                _sessionFileIndex[sid] = { file: path.join(chatDir, f), format: 'copilot' };
+                _sessionFileIndex[sid] = { file: path.join(chatDir, f), format: 'copilot-chat' };
               }
             }
           }
@@ -2409,7 +2409,7 @@ function findSessionFile(sessionId, project) {
       const { chatDir } = wsMap[hash];
       for (const ext of ['.json', '.jsonl']) {
         const candidate = path.join(chatDir, baseName + ext);
-        if (fs.existsSync(candidate)) return { file: candidate, format: 'copilot' };
+        if (fs.existsSync(candidate)) return { file: candidate, format: 'copilot-chat' };
       }
     }
   }
@@ -2758,7 +2758,7 @@ function computeSessionCost(sessionId, project) {
   if (!found) { _costMemCache[sessionId] = EMPTY_COST; return EMPTY_COST; }
 
   // Skip formats that never have cost data
-  if (found.format === 'cursor' || found.format === 'kiro' || found.format === 'copilot') { _costMemCache[sessionId] = EMPTY_COST; return EMPTY_COST; }
+  if (found.format === 'cursor' || found.format === 'kiro' || found.format === 'copilot-chat') { _costMemCache[sessionId] = EMPTY_COST; return EMPTY_COST; }
 
   // Check disk cache (keyed by file path + mtime + size for JSONL, sessionId for SQLite)
   _loadCostDiskCache();
@@ -3315,7 +3315,7 @@ function _computeSessionDailyBreakdown(s, found) {
 
   try {
     // Copilot: use optimized parser instead of line-by-line generic JSONL scan
-    if (found.format === 'copilot') {
+    if (found.format === 'copilot-chat') {
       let data;
       if (found.file.endsWith('.jsonl')) {
         data = parseCopilotJsonl(found.file);

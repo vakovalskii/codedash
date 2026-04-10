@@ -1785,8 +1785,8 @@ var AGENT_INSTALL = {
     alt: 'npm i -g opencode-ai@latest',
     url: 'https://opencode.ai',
   },
-  copilot: {
-    name: 'GitHub Copilot',
+  'copilot-chat': {
+    name: 'Copilot Chat (VS Code)',
     cmd: null,
     alt: null,
     url: 'https://github.com/features/copilot',

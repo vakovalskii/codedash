@@ -19,7 +19,7 @@ npm i -g codedash-app && codedash run
 | Cursor | JSONL | LIVE/WAITING | - | Open in Cursor |
 | OpenCode | SQLite | LIVE/WAITING | - | Терминал |
 | Kiro CLI | SQLite | LIVE/WAITING | - | Терминал |
-| Copilot | JSON/JSONL | - | - | - |
+| Copilot Chat | JSON/JSONL | - | - | - |
 
 ## Возможности
 

@@ -24,7 +24,7 @@ codedash run
 | Cursor | JSONL | Yes | Yes | Yes | - | Yes | Open in Cursor |
 | OpenCode | SQLite | Yes | Yes | Yes | - | Yes | Terminal |
 | Kiro CLI | SQLite | Yes | Yes | Yes | - | Yes | Terminal |
-| Copilot | JSON/JSONL | Yes | Yes | - | - | Yes | - |
+| Copilot Chat | JSON/JSONL | Yes | Yes | - | - | Yes | - |
 
 Also detects Claude Code running inside Cursor (via `claude-vscode` entrypoint).
 
