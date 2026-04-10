@@ -263,7 +263,7 @@ function mergeClaudeSessionDetail(session, summary, sessionFile) {
   }
 
   if (summary.customTitle) {
-    session.first_message = summary.customTitle;
+    session.session_name = summary.customTitle;
   }
 }
 
@@ -386,10 +386,11 @@ function scanOpenCodeSessions() {
         tool: 'opencode',
         project: directory || '',
         project_short: (directory || '').replace(os.homedir(), '~'),
+        session_name: title || '',
         first_ts: parseInt(timeCreated) || Date.now(),
         last_ts: parseInt(timeUpdated) || Date.now(),
         messages: parseInt(msgCount) || 0,
-        first_message: title || '',
+        first_message: '',
         has_detail: true,
         file_size: 0,
         detail_messages: parseInt(msgCount) || 0,
@@ -1040,10 +1041,11 @@ function scanCodexSessions() {
             tool: 'codex',
             project: d.project || d.cwd || '',
             project_short: (d.project || d.cwd || '').replace(os.homedir(), '~'),
+            session_name: codexTitles[sid] || '',
             first_ts: ts,
             last_ts: ts,
             messages: 1,
-            first_message: codexTitles[sid] || d.text || d.display || d.prompt || '',
+            first_message: d.text || d.display || d.prompt || '',
             has_detail: false,
             file_size: 0,
             detail_messages: 0,
@@ -1085,7 +1087,7 @@ function scanCodexSessions() {
           existing.detail_messages = summary.msgCount;
           existing.user_messages = summary.userMsgCount || 0;
           if (codexTitles[sid]) {
-            existing.first_message = codexTitles[sid];
+            existing.session_name = codexTitles[sid];
           } else if (summary.firstMsg && !existing.first_message) {
             existing.first_message = summary.firstMsg;
           }
@@ -1104,10 +1106,11 @@ function scanCodexSessions() {
             tool: 'codex',
             project: summary.projectPath,
             project_short: summary.projectPath ? summary.projectPath.replace(os.homedir(), '~') : '',
+            session_name: codexTitles[sid] || '',
             first_ts: summary.firstTs,
             last_ts: summary.lastTs,
             messages: summary.msgCount,
-            first_message: codexTitles[sid] || summary.firstMsg || '',
+            first_message: summary.firstMsg || '',
             has_detail: true,
             file_size: summary.fileSize,
             detail_messages: summary.msgCount,
@@ -1413,6 +1416,7 @@ function loadSessions() {
             tool: 'claude',
             project: d.project || '',
             project_short: (d.project || '').replace(os.homedir(), '~'),
+            session_name: '',
             first_ts: d.timestamp,
             last_ts: d.timestamp,
             messages: 0,
@@ -1483,6 +1487,7 @@ function loadSessions() {
               sessions[sid] = {
                 id: sid, tool: 'claude',
                 project: d.project || '', project_short: (d.project || '').replace(os.homedir(), '~'),
+                session_name: '',
                 first_ts: d.timestamp, last_ts: d.timestamp,
                 messages: 0, first_message: '',
                 _claude_dir: extraClaudeDir,
@@ -1521,10 +1526,11 @@ function loadSessions() {
               tool: summary.tool,
               project: summary.projectPath,
               project_short: summary.projectPath.replace(os.homedir(), '~'),
+              session_name: summary.customTitle || '',
               first_ts: summary.firstTs,
               last_ts: summary.lastTs,
               messages: summary.msgCount,
-              first_message: summary.customTitle || summary.firstMsg,
+              first_message: summary.firstMsg || '',
               has_detail: true,
               file_size: summary.fileSize,
               detail_messages: summary.msgCount,
@@ -1591,10 +1597,11 @@ function loadSessions() {
             tool: summary.tool,
             project: summary.projectPath,
             project_short: summary.projectPath.replace(os.homedir(), '~'),
+            session_name: summary.customTitle || '',
             first_ts: summary.firstTs,
             last_ts: summary.lastTs,
             messages: summary.msgCount,
-            first_message: summary.customTitle || summary.firstMsg,
+            first_message: summary.firstMsg || '',
             has_detail: true,
             file_size: summary.fileSize,
             detail_messages: summary.msgCount,

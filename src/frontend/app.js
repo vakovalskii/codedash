@@ -91,6 +91,11 @@ function getSessionGroupInfo(session) {
   return { key: name, name: name };
 }
 
+function getSessionDisplayName(session) {
+  if (!session) return '';
+  return session.session_name || session.first_message || '';
+}
+
 // ── Utilities ──────────────────────────────────────────────────
 
 function timeAgo(dateStr) {
@@ -595,6 +600,7 @@ function trigramScore(query, text) {
 function searchScore(query, session) {
   var q = query.toLowerCase();
   var fields = [
+    session.session_name || '',
     session.first_message || '',
     session.project_short || '',
     session.project || '',
@@ -733,11 +739,12 @@ function renderCard(s, idx) {
   }
   html += '</div>';
   var aiTitle = showAITitles && sessionTitles[s.id];
+  var displayName = getSessionDisplayName(s);
   if (aiTitle) {
     html += '<div class="card-title">' + escHtml(aiTitle) + '</div>';
-    html += '<div class="card-body card-body-sub">' + escHtml((s.first_message || '').slice(0, 80)) + '</div>';
+    html += '<div class="card-body card-body-sub">' + escHtml(displayName.slice(0, 80)) + '</div>';
   } else {
-    html += '<div class="card-body">' + escHtml((s.first_message || '').slice(0, 120)) + '</div>';
+    html += '<div class="card-body">' + escHtml(displayName.slice(0, 120)) + '</div>';
   }
   html += '<div class="card-footer">';
   html += '<span class="card-meta">' + s.messages + ' msgs</span>';
@@ -818,7 +825,7 @@ function renderListCard(s, idx) {
     });
   }
   html += '<span class="list-project" style="color:' + projColor + '">' + escHtml(projName) + '</span>';
-  html += '<span class="list-msg">' + escHtml((s.first_message || '').slice(0, 80)) + '</span>';
+  html += '<span class="list-msg">' + escHtml(getSessionDisplayName(s).slice(0, 80)) + '</span>';
   html += '<span class="list-meta">' + s.messages + ' msgs</span>';
   html += '<span class="list-time">' + timeAgo(s.last_ts) + '</span>';
   html += '<button class="star-btn' + (isStarred ? ' active' : '') + '" onclick="event.stopPropagation();toggleStar(\'' + s.id + '\')">&#9733;</button>';
@@ -1117,7 +1124,7 @@ function renderQACard(s, idx) {
 
   var html = '<div class="' + classes + '" data-id="' + s.id + '" onclick="onCardClick(\'' + s.id + '\', event)">';
   html += '<span class="tool-badge ' + toolClass + '">' + escHtml(toolLabel) + '</span>';
-  html += '<span class="qa-question">' + escHtml((s.first_message || '').slice(0, 160)) + '</span>';
+  html += '<span class="qa-question">' + escHtml(getSessionDisplayName(s).slice(0, 160)) + '</span>';
   html += '<span class="qa-meta">';
   html += '<span class="qa-msgs">' + s.messages + ' msgs</span>';
   if (costStr) html += '<span class="cost-badge">' + costStr + '</span>';
@@ -1212,6 +1219,7 @@ async function confirmDelete() {
       if (searchQuery) {
         var remaining = allSessions.filter(function(s) {
           return (s.project || '').toLowerCase().indexOf(searchQuery.toLowerCase()) >= 0 ||
+                 (s.session_name || '').toLowerCase().indexOf(searchQuery.toLowerCase()) >= 0 ||
                  (s.first_message || '').toLowerCase().indexOf(searchQuery.toLowerCase()) >= 0;
         });
         if (remaining.length === 0) {
@@ -1458,7 +1466,8 @@ function renderRunningCard(a, s) {
   html += '<div class="running-stat"><span class="running-stat-val">' + a.memoryMB + 'MB</span><span class="running-stat-label">MEM</span></div>';
   if (uptime) html += '<div class="running-stat"><span class="running-stat-val">' + uptime + '</span><span class="running-stat-label">Uptime</span></div>';
   html += '</div>';
-  if (s && s.first_message) html += '<div class="running-msg">' + escHtml(s.first_message.slice(0, 120)) + '</div>';
+  var displayName = getSessionDisplayName(s);
+  if (displayName) html += '<div class="running-msg">' + escHtml(displayName.slice(0, 120)) + '</div>';
   html += '<div class="running-actions">';
   html += '<button class="launch-btn" style="background:var(--accent-green);color:#000" onclick="focusSession(\'' + sid + '\')">Focus</button>';
   if (s) {
@@ -1479,7 +1488,8 @@ function renderDoneCard(s) {
   html += '<span class="running-project" style="color:' + projColor + '">' + escHtml(projName) + '</span>';
   html += '<span class="running-tool tool-' + (s.tool || 'claude') + '">' + escHtml(s.tool || 'claude') + '</span>';
   html += '</div>';
-  if (s.first_message) html += '<div class="running-msg">' + escHtml(s.first_message.slice(0, 120)) + '</div>';
+  var displayName = getSessionDisplayName(s);
+  if (displayName) html += '<div class="running-msg">' + escHtml(displayName.slice(0, 120)) + '</div>';
   html += '<div class="running-stats">';
   html += '<div class="running-stat"><span class="running-stat-val">' + (s.messages || 0) + '</span><span class="running-stat-label">msgs</span></div>';
   if (s.last_time) html += '<div class="running-stat"><span class="running-stat-val">' + s.last_time.slice(11) + '</span><span class="running-stat-label">ended</span></div>';

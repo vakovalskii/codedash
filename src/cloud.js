@@ -151,6 +151,7 @@ function serializeSession(sessionId, sessions) {
     sessionId: sessionId,
     project: session.project || '',
     projectShort: session.project_short || '',
+    sessionName: session.session_name || '',
     firstMessage: session.first_message || '',
     firstTs: session.first_ts || 0,
     lastTs: session.last_ts || 0,
