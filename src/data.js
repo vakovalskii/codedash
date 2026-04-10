@@ -1011,10 +1011,11 @@ function scanOpenCodeSessions() {
     const sessionMcp = {};
     const sessionSkills = {};
     try {
-      const toolRows = execSync(
-        `sqlite3 -separator $'\\t' "${OPENCODE_DB}" "SELECT session_id, json_extract(data, '\\$.tool'), json_extract(data, '\\$.state.input.name') FROM part WHERE json_extract(data, '\\$.type') = 'tool'"`,
-        { encoding: 'utf8', timeout: 10000, maxBuffer: 50 * 1024 * 1024 }
-      ).trim();
+      const toolRows = execFileSync('sqlite3', [
+        '-separator', '\t',
+        OPENCODE_DB,
+        "SELECT session_id, json_extract(data, '$.tool'), json_extract(data, '$.state.input.name') FROM part WHERE json_extract(data, '$.type') = 'tool'"
+      ], { encoding: 'utf8', timeout: 10000, maxBuffer: 50 * 1024 * 1024, windowsHide: true }).trim();
       if (toolRows) {
         for (const tr of toolRows.split('\n')) {
           const cols = tr.split('\t');
@@ -2606,23 +2607,26 @@ async function loadSessionsAsync(progressCb) {
   return sessions;
 }
 
-function loadSessionDetail(sessionId, project) {
+function loadSessionDetail(sessionId, project, opts) {
   const found = findSessionFile(sessionId, project);
-  if (!found) return { error: 'Session file not found', messages: [] };
+  if (!found) return { error: 'Session file not found', messages: [], total: 0 };
+
+  var offset = (opts && typeof opts.offset === 'number') ? opts.offset : 0;
+  var limit = (opts && typeof opts.limit === 'number') ? opts.limit : 0; // 0 = all (legacy)
 
   // OpenCode uses SQLite
   if (found.format === 'opencode') {
-    return loadOpenCodeDetail(sessionId);
+    return _paginateDetailResult(loadOpenCodeDetail(sessionId), offset, limit);
   }
 
   // Cursor
   if (found.format === 'cursor') {
-    return loadCursorDetail(sessionId);
+    return _paginateDetailResult(loadCursorDetail(sessionId), offset, limit);
   }
 
   // Kiro uses SQLite
   if (found.format === 'kiro') {
-    return loadKiroDetail(sessionId);
+    return _paginateDetailResult(loadKiroDetail(sessionId), offset, limit);
   }
 
   const messages = [];
@@ -2688,7 +2692,19 @@ function loadSessionDetail(sessionId, project) {
     if (m._toolSeen) delete m._toolSeen;
   }
 
-  return { messages: messages.slice(0, 200) };
+  return _paginateDetailResult({ messages }, offset, limit);
+}
+
+function _paginateDetailResult(result, offset, limit) {
+  if (!result || !result.messages) return { messages: [], total: 0, offset: offset, hasMore: false };
+  const all = result.messages;
+  const total = all.length;
+  if (!limit || limit <= 0) {
+    // Legacy behavior: return all (capped at 500)
+    return { messages: all.slice(0, 500), total, offset: 0, hasMore: false };
+  }
+  const sliced = all.slice(offset, offset + limit);
+  return { messages: sliced, total, offset, hasMore: offset + limit < total };
 }
 
 function deleteSession(sessionId, project) {
@@ -3556,6 +3572,7 @@ function createCostAggregator() {
         lastDate: state.lastDate,
         days,
         totalSessions: state.sessionsWithData,
+        totalSessionsAll: state.totalSessionsAll || state.processedCount,
         byDay: state.byDay,
         byWeek: state.byWeek,
         byProject: state.byProject,
@@ -3568,6 +3585,7 @@ function createCostAggregator() {
         processedCount: state.processedCount,
       };
     },
+    setTotalSessionsAll(n) { state.totalSessionsAll = n; },
   };
 }
 
@@ -3824,6 +3842,7 @@ function getCostAnalytics(sessions) {
     lastDate,
     days,
     totalSessions: sessionsWithData,
+    totalSessionsAll: sessions.length,
     byDay,
     byWeek,
     byProject,
@@ -3933,12 +3952,16 @@ function getActiveSessions() {
     const stat = m[4] || '';
     const cmd = m[5] || '';
 
-    // Skip wrappers
+    // Skip wrappers, MCP servers, plugins — only main agent processes
     if (cmd.includes('node bin/cli') || cmd.includes('/codedash') || cmd.includes('npm ')) continue;
     if (cmd.startsWith('grep ') || cmd.includes(' grep ')) continue;
+    if (cmd.includes('mcp-server') || cmd.includes('mcp_server') || cmd.includes('/mcp/') || cmd.includes('/mcp-servers/')) continue;
+    if (cmd.includes('/plugins/') || cmd.includes('plugin-') || cmd.includes('app-server-broker')) continue;
 
     const tool = _matchAgentCli(cmd);
     if (!tool) continue;
+    if (cmd.includes('.claude/') && !cmd.includes('claude ') && tool === 'claude') continue;
+    if (cmd.includes('.codex/') && !cmd.includes('codex ') && tool === 'codex') continue;
 
     matches.push({ pid, cpu, rss, stat, cmd, tool });
   }

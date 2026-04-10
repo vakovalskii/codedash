@@ -64,6 +64,7 @@ async function _runAnalyticsJob(filterFrom, filterTo, includeHelpers) {
 
     job.progress = { done: 0, total: sessions.length, phase: 'aggregating' };
     const agg = createCostAggregator();
+    agg.setTotalSessionsAll(sessions.length);
     const CHUNK = 50;
     for (let i = 0; i < sessions.length; i += CHUNK) {
       const slice = sessions.slice(i, i + CHUNK);
@@ -367,7 +368,12 @@ function startServer(host, port, openBrowser = true) {
     else if (req.method === 'GET' && pathname.startsWith('/api/session/') && !pathname.includes('/export')) {
       const sessionId = pathname.split('/').pop();
       const project = parsed.searchParams.get('project') || '';
-      const data = loadSessionDetail(sessionId, project);
+      const rawOffset = parsed.searchParams.get('offset');
+      const rawLimit = parsed.searchParams.get('limit');
+      const opts = {};
+      if (rawOffset !== null) opts.offset = parseInt(rawOffset) || 0;
+      if (rawLimit !== null) opts.limit = parseInt(rawLimit) || 50;
+      const data = loadSessionDetail(sessionId, project, Object.keys(opts).length > 0 ? opts : undefined);
       json(res, data);
     }
 
@@ -773,6 +779,49 @@ function startServer(host, port, openBrowser = true) {
       });
     }
 
+    // ── Summarize session via LLM ──────────────
+    else if (req.method === 'POST' && pathname.startsWith('/api/summarize/')) {
+      const sessionId = pathname.split('/').pop();
+      const project = parsed.searchParams.get('project') || '';
+      const config = loadLLMConfig();
+      if (!config.url || !config.apiKey) {
+        json(res, { ok: false, error: 'LLM not configured. Connect GitHub Copilot in Settings.' }, 400);
+        return;
+      }
+      try {
+        const detail = loadSessionDetail(sessionId, project);
+        const msgs = detail.messages || [];
+        if (msgs.length === 0) {
+          json(res, { ok: false, error: 'Session not found or empty' }, 404);
+          return;
+        }
+        // First 10 + last 10 (deduped), truncated to 500 chars each
+        const first10 = msgs.slice(0, 10);
+        const last10 = msgs.slice(-10);
+        const seen = new Set();
+        const selected = [];
+        for (const m of first10.concat(last10)) {
+          const key = (m.uuid || '') + (m.role || '') + (m.content || '').slice(0, 50);
+          if (!seen.has(key)) { seen.add(key); selected.push(m); }
+        }
+        const conversation = selected.map(function(m) {
+          var text = typeof m.content === 'string' ? m.content : JSON.stringify(m.content);
+          if (text.length > 500) text = text.slice(0, 500) + '...';
+          return (m.role === 'user' ? 'User' : 'Assistant') + ': ' + text;
+        }).join('\n\n');
+
+        callLLM(config, conversation, msgs.length, 'summarize').then(function(summary) {
+          log('LLM', `summary generated (${summary.length} chars)`);
+          json(res, { ok: true, summary });
+        }).catch(function(e) {
+          log('ERROR', `summarize failed: ${e.message}`);
+          json(res, { ok: false, error: e.message }, 500);
+        });
+      } catch (e) {
+        json(res, { ok: false, error: e.message }, 500);
+      }
+    }
+
     // ── Leaderboard stats ────────────────────
     // ── Leaderboard (async job + live partial) ─────────────────
     else if (req.method === 'GET' && pathname === '/api/leaderboard') {
@@ -892,12 +941,8 @@ function startServer(host, port, openBrowser = true) {
     else if (req.method === 'GET' && pathname === '/api/version') {
       const pkg = require('../package.json');
       const current = pkg.version;
-      // Fetch latest from npm registry
-      fetchLatestVersion(pkg.name).then(latest => {
-        json(res, { current, latest, updateAvailable: latest && latest !== current && isNewer(latest, current) });
-      }).catch(() => {
-        json(res, { current, latest: null, updateAvailable: false });
-      });
+      // Always return updateAvailable: false — banner disabled for dev/fork builds
+      json(res, { current, latest: current, updateAvailable: false });
     }
 
     // ── 404 ─────────────────────────────────
@@ -1453,9 +1498,26 @@ function saveLLMConfig(config) {
   }, null, 2));
 }
 
-function callLLM(config, conversation, totalMessages) {
+function callLLM(config, conversation, totalMessages, mode) {
   return new Promise((resolve, reject) => {
-    const systemPrompt = `<MAIN_ROLE>
+    let systemPrompt, userPrompt, maxTokens;
+
+    if (mode === 'summarize') {
+      systemPrompt = `<MAIN_ROLE>
+You are a coding session summarizer. You read coding conversations and produce a concise but informative summary.
+</MAIN_ROLE>
+
+<MAIN_GUIDELINES>
+- Write 3-6 sentences summarizing the session: what was discussed, decided, and accomplished
+- Mention specific: technologies, files, features, bugs, architectural decisions
+- Write in the SAME language the user used in the conversation
+- Use plain text, no markdown or formatting
+- Respond ONLY with the summary text, nothing else
+</MAIN_GUIDELINES>`;
+      userPrompt = `Coding session: ${totalMessages} messages total. First and last messages below. Summarize what happened.\n\n${conversation}`;
+      maxTokens = 500;
+    } else {
+      systemPrompt = `<MAIN_ROLE>
 You are a coding session summarizer. You read coding conversations and produce a single short concrete title describing what was done.
 </MAIN_ROLE>
 
@@ -1474,18 +1536,17 @@ BAD: "Coding session about project" — too vague
 BAD: "Bug fix and improvements" — no specifics
 BAD: "Working with code" — meaningless
 </MAIN_GUIDELINES>`;
-
-    const prompt = `Coding session: ${totalMessages} messages total. First and last messages below.
-
-${conversation}`;
+      userPrompt = `Coding session: ${totalMessages} messages total. First and last messages below.\n\n${conversation}`;
+      maxTokens = 200;
+    }
 
     const body = JSON.stringify({
       model: config.model,
       messages: [
         { role: 'system', content: systemPrompt },
-        { role: 'user', content: prompt },
+        { role: 'user', content: userPrompt },
       ],
-      max_tokens: 200,
+      max_tokens: maxTokens,
       temperature: 0.3,
     });
 
@@ -1522,6 +1583,11 @@ ${conversation}`;
             // Log full response for debugging
             log('ERROR', 'LLM empty content, full response: ' + JSON.stringify(result).slice(0, 500));
             reject(new Error('LLM returned empty content. If using a reasoning model, it may not support structured output.'));
+            return;
+          }
+          // Summarize mode: return raw text content directly
+          if (mode === 'summarize') {
+            resolve(content.trim());
             return;
           }
           let title;

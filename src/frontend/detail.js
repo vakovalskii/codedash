@@ -1,11 +1,34 @@
 // ── Detail panel ───────────────────────────────────────────────
 
+// Progressive loading page size
+var DETAIL_PAGE_SIZE = 50;
+
+// State for current detail view
+var _detailState = {
+  sessionId: null,
+  project: null,
+  allMessages: [],   // all loaded messages so far
+  total: 0,
+  offset: 0,
+  hasMore: false,
+  filter: 'all'      // 'all' | 'user' | 'assistant' | 'tool'
+};
+
 async function openDetail(s) {
   var panel = document.getElementById('detailPanel');
   var overlay = document.getElementById('overlay');
   var title = document.getElementById('detailTitle');
   var body = document.getElementById('detailBody');
   if (!panel || !body) return;
+
+  // Reset detail state
+  _detailState.sessionId = s.id;
+  _detailState.project = s.project || '';
+  _detailState.allMessages = [];
+  _detailState.total = 0;
+  _detailState.offset = 0;
+  _detailState.hasMore = false;
+  _detailState.filter = 'all';
 
   title.textContent = escHtml(getProjectName(s.project)) + ' / ' + s.id.slice(0, 12);
 
@@ -82,9 +105,21 @@ async function openDetail(s) {
     var convertTarget = s.tool === 'codex' ? 'claude' : 'codex';
     infoHtml += '<button class="launch-btn btn-secondary" onclick="convertTo(\'' + s.id + '\',\'' + escHtml(s.project || '') + '\',\'' + convertTarget + '\')">Convert to ' + convertTarget + '</button>';
     infoHtml += '<button class="launch-btn btn-secondary" onclick="downloadHandoff(\'' + s.id + '\',\'' + escHtml(s.project || '') + '\')">Handoff</button>';
+    infoHtml += '<button class="launch-btn btn-secondary btn-summarize" id="detailSummarizeBtn" onclick="summarizeSession(\'' + s.id + '\',\'' + escProject + '\')">&#10024; Summarize</button>';
   }
   infoHtml += '<button class="star-btn detail-star' + (isStarred ? ' active' : '') + '" onclick="toggleStar(\'' + s.id + '\')">&#9733; ' + (isStarred ? 'Starred' : 'Star') + '</button>';
   infoHtml += '<button class="launch-btn btn-delete" onclick="showDeleteConfirm(\'' + s.id + '\',\'' + escHtml(s.project || '') + '\')">Delete</button>';
+  infoHtml += '</div>';
+
+  // Summary box (hidden by default, shown after summarize)
+  infoHtml += '<div class="detail-summary" id="detailSummary" style="display:none"></div>';
+
+  // Message filters
+  infoHtml += '<div class="detail-msg-filters" id="detailMsgFilters" style="display:none">';
+  infoHtml += '<button class="filter-btn active" data-filter="all" onclick="setDetailFilter(\'all\')">All</button>';
+  infoHtml += '<button class="filter-btn" data-filter="user" onclick="setDetailFilter(\'user\')">User</button>';
+  infoHtml += '<button class="filter-btn" data-filter="assistant" onclick="setDetailFilter(\'assistant\')">Assistant</button>';
+  infoHtml += '<button class="filter-btn" data-filter="tool" onclick="setDetailFilter(\'tool\')">Tools</button>';
   infoHtml += '</div>';
 
   body.innerHTML = infoHtml + '<div class="detail-messages"><div class="loading">Loading messages...</div></div><div class="detail-commits"></div>';
@@ -92,43 +127,9 @@ async function openDetail(s) {
   panel.classList.add('open');
   overlay.classList.add('open');
 
-  // Load messages
+  // Load messages progressively
   if (s.has_detail) {
-    try {
-      var resp = await fetch('/api/session/' + s.id + '?project=' + encodeURIComponent(s.project || ''));
-      var data = await resp.json();
-      var msgContainer = body.querySelector('.detail-messages');
-      if (data.messages && data.messages.length > 0) {
-        var msgsHtml = '<h3>Conversation</h3>';
-        data.messages.forEach(function(m) {
-          var roleClass = m.role === 'user' ? 'msg-user' : 'msg-assistant';
-          var roleLabel = m.role === 'user' ? 'You' : 'Assistant';
-          var hasTools = m.tools && m.tools.length > 0;
-          msgsHtml += '<div class="message ' + roleClass + (hasTools ? ' has-tools' : '') + '">';
-          msgsHtml += '<div class="msg-inner">';
-          msgsHtml += '<div class="msg-role">' + roleLabel + '</div>';
-          msgsHtml += '<div class="msg-content">' + escHtml(m.content) + '</div>';
-          msgsHtml += '</div>';
-          if (hasTools) {
-            msgsHtml += '<div class="msg-tools">';
-            m.tools.forEach(function(t) {
-              if (t.type === 'mcp') {
-                msgsHtml += '<span class="tool-badge badge-mcp">' + escHtml(t.tool) + '</span>';
-              } else if (t.type === 'skill') {
-                msgsHtml += '<span class="tool-badge badge-skill">' + escHtml(t.skill) + '</span>';
-              }
-            });
-            msgsHtml += '</div>';
-          }
-          msgsHtml += '</div>';
-        });
-        msgContainer.innerHTML = msgsHtml;
-      } else {
-        msgContainer.innerHTML = '<div class="empty-state">No messages found in detail file.</div>';
-      }
-    } catch (e) {
-      body.querySelector('.detail-messages').innerHTML = '<div class="empty-state">Failed to load messages.</div>';
-    }
+    await _loadDetailPage(s.id, s.project || '', 0, body);
   } else {
     body.querySelector('.detail-messages').innerHTML = '<div class="empty-state">No detail file available for this session.</div>';
   }
@@ -194,6 +195,173 @@ async function openDetail(s) {
       cHtml += '</div>';
       commitsContainer.innerHTML = cHtml;
     }
+  }
+}
+
+// ── Progressive message loading ───────────────────────────────
+
+async function _loadDetailPage(sessionId, project, offset, body) {
+  try {
+    var url = '/api/session/' + sessionId + '?project=' + encodeURIComponent(project) +
+      '&offset=' + offset + '&limit=' + DETAIL_PAGE_SIZE;
+    var resp = await fetch(url);
+    var data = await resp.json();
+    var msgContainer = body.querySelector('.detail-messages');
+    if (!msgContainer) return;
+
+    _detailState.total = data.total || 0;
+    _detailState.hasMore = !!data.hasMore;
+    _detailState.offset = (data.offset || 0) + (data.messages ? data.messages.length : 0);
+
+    if (data.messages && data.messages.length > 0) {
+      // Append to our running list
+      for (var i = 0; i < data.messages.length; i++) {
+        _detailState.allMessages.push(data.messages[i]);
+      }
+      // Show filter bar
+      var filterBar = document.getElementById('detailMsgFilters');
+      if (filterBar) filterBar.style.display = '';
+      // Re-render all visible messages
+      _renderDetailMessages(msgContainer);
+    } else if (_detailState.allMessages.length === 0) {
+      msgContainer.innerHTML = '<div class="empty-state">No messages found in detail file.</div>';
+    }
+  } catch (e) {
+    var mc = body.querySelector('.detail-messages');
+    if (mc && _detailState.allMessages.length === 0) {
+      mc.innerHTML = '<div class="empty-state">Failed to load messages.</div>';
+    }
+  }
+}
+
+function _renderSingleMessage(m) {
+  var roleClass = m.role === 'user' ? 'msg-user' : 'msg-assistant';
+  var roleLabel = m.role === 'user' ? 'You' : 'Assistant';
+  var hasTools = m.tools && m.tools.length > 0;
+  var html = '<div class="message ' + roleClass + (hasTools ? ' has-tools' : '') + '" data-role="' + (m.role || 'assistant') + '" data-has-tools="' + (hasTools ? '1' : '0') + '">';
+  html += '<div class="msg-inner">';
+  html += '<div class="msg-role">' + roleLabel + '</div>';
+  html += '<div class="msg-content">' + escHtml(m.content) + '</div>';
+  html += '</div>';
+  if (hasTools) {
+    html += '<div class="msg-tools">';
+    m.tools.forEach(function(t) {
+      if (t.type === 'mcp') {
+        html += '<span class="tool-badge badge-mcp">' + escHtml(t.tool) + '</span>';
+      } else if (t.type === 'skill') {
+        html += '<span class="tool-badge badge-skill">' + escHtml(t.skill) + '</span>';
+      }
+    });
+    html += '</div>';
+  }
+  html += '</div>';
+  return html;
+}
+
+function _renderDetailMessages(container) {
+  var msgs = _detailState.allMessages;
+  var filter = _detailState.filter;
+  var html = '<h3>Conversation (' + _detailState.allMessages.length;
+  if (_detailState.total > _detailState.allMessages.length) {
+    html += ' of ' + _detailState.total;
+  }
+  html += ' messages)</h3>';
+  html += '<div class="detail-msg-list" id="detailMsgList">';
+
+  for (var i = 0; i < msgs.length; i++) {
+    var m = msgs[i];
+    var visible = _matchesFilter(m, filter);
+    if (visible) {
+      html += _renderSingleMessage(m);
+    }
+  }
+  html += '</div>';
+
+  // "Load more" button
+  if (_detailState.hasMore) {
+    var remaining = _detailState.total - _detailState.offset;
+    html += '<div class="detail-load-more">';
+    html += '<button class="launch-btn btn-secondary" id="detailLoadMoreBtn" onclick="_onLoadMore()">Load more (' + remaining + ' remaining)</button>';
+    html += '</div>';
+  }
+
+  container.innerHTML = html;
+}
+
+function _matchesFilter(m, filter) {
+  if (filter === 'all') return true;
+  if (filter === 'user') return m.role === 'user';
+  if (filter === 'assistant') return m.role === 'assistant';
+  if (filter === 'tool') return m.tools && m.tools.length > 0;
+  return true;
+}
+
+async function _onLoadMore() {
+  var btn = document.getElementById('detailLoadMoreBtn');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Loading...';
+  }
+  var body = document.getElementById('detailBody');
+  if (!body) return;
+  await _loadDetailPage(_detailState.sessionId, _detailState.project, _detailState.offset, body);
+}
+
+// ── Message filters ───────────────────────────────────────────
+
+function setDetailFilter(filter) {
+  _detailState.filter = filter;
+  // Update active button
+  var btns = document.querySelectorAll('.detail-msg-filters .filter-btn');
+  for (var i = 0; i < btns.length; i++) {
+    if (btns[i].getAttribute('data-filter') === filter) {
+      btns[i].classList.add('active');
+    } else {
+      btns[i].classList.remove('active');
+    }
+  }
+  // Re-render messages (client-side filter, no re-fetch)
+  var msgContainer = document.querySelector('.detail-messages');
+  if (msgContainer) _renderDetailMessages(msgContainer);
+}
+
+// ── Summarize session ─────────────────────────────────────────
+
+async function summarizeSession(sessionId, project) {
+  var btn = document.getElementById('detailSummarizeBtn');
+  var summaryBox = document.getElementById('detailSummary');
+  if (!btn || !summaryBox) return;
+
+  btn.disabled = true;
+  btn.innerHTML = '&#8987; Summarizing...';
+
+  try {
+    var resp = await fetch('/api/summarize/' + sessionId + '?project=' + encodeURIComponent(project), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}'
+    });
+    var data = await resp.json();
+
+    if (data.ok && data.summary) {
+      summaryBox.style.display = '';
+      summaryBox.innerHTML = '<div class="summary-header"><span class="summary-label">&#10024; Summary</span><button class="toolbar-btn" style="font-size:10px;padding:1px 6px" onclick="this.parentElement.parentElement.style.display=\'none\'" title="Dismiss">&times;</button></div><div class="summary-content">' + escHtml(data.summary) + '</div>';
+      btn.innerHTML = '&#10024; Summarize';
+      btn.disabled = false;
+    } else if (data.error && (data.error.indexOf('not available') >= 0 || data.error.indexOf('not authenticated') >= 0)) {
+      summaryBox.style.display = '';
+      summaryBox.innerHTML = '<div class="summary-header"><span class="summary-label">&#10024; Summary</span></div><div class="summary-content summary-unavailable">Connect GitHub Copilot in Settings to use Summarize.</div>';
+      btn.innerHTML = '&#10024; Summarize';
+      btn.disabled = false;
+    } else {
+      showToast('Summarize failed: ' + (data.error || 'unknown'));
+      btn.innerHTML = '&#10024; Summarize';
+      btn.disabled = false;
+    }
+  } catch (e) {
+    showToast('Summarize failed: ' + e.message);
+    btn.innerHTML = '&#10024; Summarize';
+    btn.disabled = false;
   }
 }
 

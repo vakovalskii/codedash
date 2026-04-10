@@ -283,7 +283,7 @@ function renderAnalyticsUI(container, data, opts) {
   html += '<div class="analytics-card"><span class="analytics-val">$' + (data.totalCost || 0).toFixed(2) + '</span><span class="analytics-label">Total cost (API-equivalent)</span></div>';
   html += '<div class="analytics-card"><span class="analytics-val">' + formatTokens(data.totalTokens || 0) + '</span><span class="analytics-label">Total tokens</span></div>';
   html += '<div class="analytics-card"><span class="analytics-val">$' + (data.dailyRate || 0).toFixed(2) + '</span><span class="analytics-label">Avg per day (' + (data.days || 1) + ' days)</span></div>';
-  html += '<div class="analytics-card"><span class="analytics-val">' + (data.totalSessions || 0) + '</span><span class="analytics-label">Sessions</span></div>';
+  html += '<div class="analytics-card"><span class="analytics-val">' + (data.totalSessions || 0) + '</span><span class="analytics-label">Sessions with cost data' + (data.totalSessionsAll > data.totalSessions ? ' / ' + data.totalSessionsAll + ' total' : '') + '</span></div>';
   html += '</div>';
 
   // Burn rate

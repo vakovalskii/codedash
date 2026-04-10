@@ -203,10 +203,20 @@ body {
     width: 100%;
     padding: 8px 12px;
     border-radius: 6px;
-    background: rgba(255,255,255,0.04);
+    background: var(--bg-card, rgba(255,255,255,0.04));
     color: var(--text-primary);
     border: 1px solid var(--border);
     font-size: 13px;
+    -webkit-appearance: none;
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%236e7681' d='M2 4l4 4 4-4'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 10px center;
+    padding-right: 28px;
+}
+.settings-select option {
+    background: var(--bg-card, #161b22);
+    color: var(--text-primary, #e6edf3);
 }
 .settings-checkbox {
     display: flex;
@@ -1548,6 +1558,195 @@ body {
 
 .msg-content {
     white-space: pre-wrap;
+}
+
+/* ── Summarize Button ──────────────────────────────────────── */
+
+.btn-summarize {
+    background: linear-gradient(135deg, #8b5cf6, #6366f1);
+    color: white;
+    border: none;
+    padding: 6px 14px;
+    border-radius: 6px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: opacity 0.2s;
+}
+.btn-summarize:hover { opacity: 0.85; }
+.btn-summarize:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* ── Session Summary Box ───────────────────────────────────── */
+
+.session-summary {
+    margin: 12px 16px;
+    padding: 14px 16px;
+    background: linear-gradient(135deg, rgba(139,92,246,0.08), rgba(99,102,241,0.05));
+    border: 1px solid rgba(139,92,246,0.25);
+    border-radius: 8px;
+    font-size: 13px;
+    line-height: 1.6;
+    color: var(--text-primary);
+}
+.session-summary .summary-header {
+    font-size: 11px;
+    font-weight: 600;
+    color: #8b5cf6;
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+/* ── Message Role Filters ──────────────────────────────────── */
+
+.msg-filters {
+    display: flex;
+    gap: 4px;
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--border);
+}
+.msg-filter-btn {
+    padding: 4px 10px;
+    border-radius: 12px;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 11px;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+.msg-filter-btn.active {
+    background: var(--accent-blue);
+    color: white;
+    border-color: var(--accent-blue);
+}
+.msg-filter-btn:hover:not(.active) {
+    background: var(--bg-card-hover);
+}
+
+/* ── Load More Button ──────────────────────────────────────── */
+
+.load-more-bar {
+    text-align: center;
+    padding: 12px;
+    border-top: 1px solid var(--border);
+}
+.load-more-btn {
+    padding: 8px 24px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--bg-card);
+    color: var(--text-primary);
+    font-size: 12px;
+    cursor: pointer;
+}
+.load-more-btn:hover { background: var(--bg-card-hover); }
+
+/* ── Progressive Loading Indicator ─────────────────────────── */
+
+.messages-loading {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 20px;
+    color: var(--text-muted);
+    font-size: 13px;
+}
+.messages-loading .spinner {
+    width: 16px;
+    height: 16px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent-blue);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Light theme overrides for summary & summarize button */
+[data-theme="light"] .session-summary {
+    background: linear-gradient(135deg, rgba(139,92,246,0.06), rgba(99,102,241,0.04));
+    border-color: rgba(139,92,246,0.2);
+}
+[data-theme="light"] .session-summary .summary-header {
+    color: #7c3aed;
+}
+[data-theme="light"] .btn-summarize {
+    background: linear-gradient(135deg, #7c3aed, #4f46e5);
+}
+
+/* ── Detail Summary Box ────────────────────────────────────── */
+
+.detail-summary {
+    margin: 12px 0;
+    padding: 14px 16px;
+    background: linear-gradient(135deg, rgba(139,92,246,0.08), rgba(99,102,241,0.05));
+    border: 1px solid rgba(139,92,246,0.25);
+    border-radius: 8px;
+    font-size: 13px;
+    line-height: 1.6;
+    color: var(--text-primary);
+}
+.detail-summary .summary-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+}
+.detail-summary .summary-label {
+    font-size: 11px;
+    font-weight: 600;
+    color: #8b5cf6;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+.detail-summary .summary-content {
+    white-space: pre-wrap;
+    font-size: 13px;
+}
+.detail-summary .summary-unavailable {
+    color: var(--text-muted);
+    font-style: italic;
+}
+[data-theme="light"] .detail-summary {
+    background: linear-gradient(135deg, rgba(139,92,246,0.06), rgba(99,102,241,0.04));
+    border-color: rgba(139,92,246,0.2);
+}
+[data-theme="light"] .detail-summary .summary-label {
+    color: #7c3aed;
+}
+
+/* ── Detail Message Filters ───────────────────────────────── */
+
+.detail-msg-filters {
+    display: flex;
+    gap: 4px;
+    margin: 12px 0 4px;
+}
+.detail-msg-filters .filter-btn {
+    padding: 4px 12px;
+    border-radius: 12px;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 11px;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+.detail-msg-filters .filter-btn.active {
+    background: var(--accent-blue);
+    color: white;
+    border-color: var(--accent-blue);
+}
+.detail-msg-filters .filter-btn:hover:not(.active) {
+    background: var(--bg-card-hover);
+}
+
+/* ── Detail Load More ─────────────────────────────────────── */
+
+.detail-load-more {
+    text-align: center;
+    padding: 12px 0;
 }
 
 /* ── Commits ────────────────────────────────────────────────── */

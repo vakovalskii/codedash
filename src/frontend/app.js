@@ -1870,25 +1870,7 @@ async function checkForUpdates() {
     }
     localStorage.setItem('codedash-last-version', data.current);
 
-    if (data.updateAvailable) {
-      if (badge) {
-        badge.textContent = 'v' + data.current + ' → v' + data.latest;
-        badge.classList.add('update-available');
-        badge.title = 'Click to copy update command';
-        badge.onclick = function() {
-          navigator.clipboard.writeText('npm i -g codedash-app@latest').then(function() {
-            showToast('Copied: npm i -g codedash-app@latest');
-          });
-        };
-      }
-      var banner = document.getElementById('updateBanner');
-      var text = document.getElementById('updateText');
-      if (banner && text) {
-        text.textContent = 'v' + data.latest + ' available — run: npm i -g codedash-app@latest';
-        banner.style.display = 'flex';
-        banner.dataset.cmd = 'npm i -g codedash-app@latest';
-      }
-    }
+    // Update banner disabled — dev/fork build, not published to npm
   } catch {}
 }
 

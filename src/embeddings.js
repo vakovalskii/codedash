@@ -105,15 +105,160 @@ async function embedLocal(texts) {
   return results;
 }
 
+// ── Copilot token exchange (for automatic API embeddings) ────
+// Reads GitHub Copilot OAuth credentials and exchanges for a
+// short-lived session token, exactly like copilot-client.js does
+// for chat completions.
+
+const COPILOT_TOKEN_ENDPOINT = 'https://api.github.com/copilot_internal/v2/token';
+const COPILOT_DEFAULT_API_BASE = 'https://api.individual.githubcopilot.com';
+const COPILOT_USER_AGENT = `copilot/1.0.14 (client/github/cli ${process.platform} v24.11.1) term/${process.env.TERM_PROGRAM || 'xterm'}`;
+const COPILOT_TOKEN_REFRESH_MARGIN_SEC = 60;
+
+let _copilotSessionToken = null;
+let _copilotSessionExpiresAt = 0;
+let _copilotApiBase = COPILOT_DEFAULT_API_BASE;
+
+/**
+ * Load the Copilot OAuth token from known credential locations.
+ * @returns {string|null} The gho_... token, or null
+ */
+function _loadCopilotOAuthToken() {
+  // 1. ~/.copilot/auth/credential.json
+  try {
+    const credPath = path.join(os.homedir(), '.copilot', 'auth', 'credential.json');
+    if (fs.existsSync(credPath)) {
+      const data = JSON.parse(fs.readFileSync(credPath, 'utf8'));
+      if (data.token && typeof data.token === 'string' && data.token.length > 0) {
+        return data.token;
+      }
+    }
+  } catch (_) {}
+  // 2. ~/.config/github-copilot/apps.json (legacy VS Code extension)
+  try {
+    const appsPath = path.join(os.homedir(), '.config', 'github-copilot', 'apps.json');
+    if (fs.existsSync(appsPath)) {
+      const data = JSON.parse(fs.readFileSync(appsPath, 'utf8'));
+      for (const key of Object.keys(data)) {
+        if (key.startsWith('github.com') && data[key] && data[key].oauth_token) {
+          return data[key].oauth_token;
+        }
+      }
+    }
+  } catch (_) {}
+  return null;
+}
+
+/**
+ * Exchange OAuth token for a short-lived Copilot session token.
+ * Caches result and refreshes 60s before expiry.
+ * @returns {Promise<{token: string, api_base: string}>}
+ */
+async function _ensureCopilotSession() {
+  const now = Math.floor(Date.now() / 1000);
+  if (_copilotSessionToken && _copilotSessionExpiresAt > now + COPILOT_TOKEN_REFRESH_MARGIN_SEC) {
+    return { token: _copilotSessionToken, api_base: _copilotApiBase };
+  }
+
+  const oauthToken = _loadCopilotOAuthToken();
+  if (!oauthToken) throw new Error('No Copilot OAuth token found');
+
+  const result = await new Promise((resolve, reject) => {
+    const parsed = new URL(COPILOT_TOKEN_ENDPOINT);
+    const req = https.request({
+      hostname: parsed.hostname,
+      port: 443,
+      path: parsed.pathname + parsed.search,
+      method: 'GET',
+      headers: {
+        'User-Agent': COPILOT_USER_AGENT,
+        'Accept': 'application/json',
+        'Authorization': 'token ' + oauthToken,
+      },
+    }, (res) => {
+      const chunks = [];
+      res.on('data', c => chunks.push(c));
+      res.on('end', () => {
+        const body = Buffer.concat(chunks).toString('utf8');
+        if (res.statusCode !== 200) {
+          return reject(new Error('Copilot token exchange failed (HTTP ' + res.statusCode + '): ' + body));
+        }
+        try { resolve(JSON.parse(body)); } catch (e) { reject(e); }
+      });
+    });
+    req.on('error', reject);
+    req.setTimeout(15000, () => { req.destroy(); reject(new Error('Copilot token exchange timeout')); });
+    req.end();
+  });
+
+  if (!result.token) throw new Error('Copilot token exchange returned empty token');
+
+  _copilotSessionToken = result.token;
+  _copilotSessionExpiresAt = result.expires_at || 0;
+  _copilotApiBase = (result.endpoints && result.endpoints.api) || COPILOT_DEFAULT_API_BASE;
+
+  return { token: _copilotSessionToken, api_base: _copilotApiBase };
+}
+
+/**
+ * Check if Copilot credentials exist on disk (sync, no network).
+ * @returns {boolean}
+ */
+function _isCopilotAvailable() {
+  return _loadCopilotOAuthToken() !== null;
+}
+
 // ── Provider 2: API (OpenAI-compatible) ──────────────────────
+// Priority: 1) Copilot auto-discovery  2) Manual config fallback
 async function embedAPI(texts) {
-  const cfg = loadConfig();
-  if (!cfg.api_base_url || !cfg.api_key) throw new Error('API embedding not configured');
   if (!Array.isArray(texts)) texts = [texts];
 
-  const url = new URL(cfg.api_base_url);
+  // ── Try Copilot first ──
+  if (_isCopilotAvailable()) {
+    try {
+      const session = await _ensureCopilotSession();
+      return await _callEmbeddingsEndpoint(
+        session.api_base + '/embeddings',
+        session.token,
+        'text-embedding-3-small',
+        texts,
+        { 'Copilot-Integration-Id': 'codedash', 'Editor-Version': 'codedash/1.0' }
+      );
+    } catch (copilotErr) {
+      // Copilot failed — fall through to manual config
+      const cfg = loadConfig();
+      if (!cfg.api_base_url || !cfg.api_key) {
+        throw new Error('Copilot embeddings failed: ' + copilotErr.message);
+      }
+    }
+  }
+
+  // ── Fallback: manual config (api_base_url + api_key) ──
+  const cfg = loadConfig();
+  if (!cfg.api_base_url || !cfg.api_key) throw new Error('API embedding not configured (no Copilot credentials and no manual config)');
+
+  return await _callEmbeddingsEndpoint(
+    cfg.api_base_url,
+    cfg.api_key,
+    cfg.api_model || 'text-embedding-3-small',
+    texts,
+    {}
+  );
+}
+
+/**
+ * Call an OpenAI-compatible /embeddings endpoint.
+ * @param {string} endpointUrl - Full URL (e.g. "https://api.../embeddings")
+ * @param {string} token - Bearer token
+ * @param {string} model - Model name
+ * @param {string[]} texts - Input texts
+ * @param {Object} extraHeaders - Additional headers
+ * @returns {Promise<number[][]>}
+ */
+function _callEmbeddingsEndpoint(endpointUrl, token, model, texts, extraHeaders) {
+  const url = new URL(endpointUrl);
   const body = JSON.stringify({
-    model: cfg.api_model || 'text-embedding-3-small',
+    model,
     input: texts,
     encoding_format: 'float',
   });
@@ -124,8 +269,9 @@ async function embedAPI(texts) {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + cfg.api_key,
+        'Authorization': 'Bearer ' + token,
         'Accept': 'application/json',
+        ...extraHeaders,
       },
       timeout: 30000,
     }, (res) => {
@@ -137,7 +283,7 @@ async function embedAPI(texts) {
           if (parsed.data && Array.isArray(parsed.data)) {
             resolve(parsed.data.map(d => d.embedding));
           } else {
-            reject(new Error('Unexpected API response'));
+            reject(new Error('Unexpected API response: ' + (data.slice(0, 200))));
           }
         } catch (e) { reject(e); }
       });
@@ -193,10 +339,10 @@ async function embed(texts) {
       return await embedLocal(texts);
     }
   } catch {}
-  // Try API
+  // Try API (Copilot auto-discovery or manual config)
   try {
     const cfg = loadConfig();
-    if (cfg.api_base_url && cfg.api_key) {
+    if (_isCopilotAvailable() || (cfg.api_base_url && cfg.api_key)) {
       return await embedAPI(texts);
     }
   } catch {}
@@ -209,6 +355,7 @@ function isAvailable() {
     require.resolve('@huggingface/transformers');
     return true;
   } catch {
+    if (_isCopilotAvailable()) return true;
     const cfg = loadConfig();
     return !!(cfg.api_base_url && cfg.api_key);
   }
