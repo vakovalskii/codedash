@@ -668,24 +668,132 @@ function extractCopilotResponseText(response) {
 }
 
 // Parse a Copilot JSON session file — returns { requests, creationDate, sessionId }
+// Note: large files (30+ MB) are slow because of embedded image attachments in variableData.
+// JSON.parse is unavoidable here, but Node handles it in ~1-2s for typical files.
 function parseCopilotJson(filePath) {
   const raw = fs.readFileSync(filePath, 'utf8');
   return JSON.parse(raw);
 }
 
+// Disk cache for Copilot session metadata (avoids re-scanning large files)
+const COPILOT_PARSED_CACHE_FILE = path.join(os.tmpdir(), 'codedash-copilot-parsed-cache.json');
+let _copilotParsedCache = null;
+
+function _loadCopilotParsedCache() {
+  if (_copilotParsedCache) return;
+  try {
+    if (fs.existsSync(COPILOT_PARSED_CACHE_FILE)) {
+      _copilotParsedCache = JSON.parse(fs.readFileSync(COPILOT_PARSED_CACHE_FILE, 'utf8'));
+    } else {
+      _copilotParsedCache = {};
+    }
+  } catch { _copilotParsedCache = {}; }
+}
+
+function _saveCopilotParsedCache() {
+  try { fs.writeFileSync(COPILOT_PARSED_CACHE_FILE, JSON.stringify(_copilotParsedCache)); } catch {}
+}
+
+// Scan metadata for a Copilot JSON file. Uses disk cache keyed by path|mtime|size.
+function scanCopilotJsonMetadata(filePath, stat) {
+  _loadCopilotParsedCache();
+  const cacheKey = filePath + '|' + stat.mtimeMs + '|' + stat.size;
+  if (_copilotParsedCache[cacheKey]) return _copilotParsedCache[cacheKey];
+
+  let result;
+  if (stat.size < 1048576) {
+    // Small file (<1MB): full parse is fast
+    const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    const reqs = data.requests || [];
+    result = {
+      creationDate: data.creationDate || 0,
+      msgCount: reqs.length,
+      firstMsg: (reqs[0] && reqs[0].message && reqs[0].message.text || '').slice(0, 200),
+    };
+  } else {
+    // Large file: peek first 4KB for metadata, estimate msg count
+    const fd = fs.openSync(filePath, 'r');
+    const peekBuf = Buffer.alloc(Math.min(4096, stat.size));
+    fs.readSync(fd, peekBuf, 0, peekBuf.length, 0);
+    fs.closeSync(fd);
+    const peek = peekBuf.toString('utf8');
+    let creationDate = 0;
+    const cdMatch = peek.match(/"creationDate"\s*:\s*(\d+)/);
+    if (cdMatch) creationDate = parseInt(cdMatch[1]);
+    let firstMsg = '';
+    const fmMatch = peek.match(/"text"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+    if (fmMatch) try { firstMsg = JSON.parse('"' + fmMatch[1] + '"').slice(0, 200); } catch {}
+    // For large files, estimate message count (actual count loaded on detail view)
+    // Average Copilot request is ~200KB-2MB with attachments
+    result = { creationDate, msgCount: Math.max(1, Math.round(stat.size / 500000)), firstMsg };
+  }
+
+  _copilotParsedCache[cacheKey] = result;
+  return result;
+}
+
+// Scan metadata for a Copilot JSONL file. Uses disk cache.
+function scanCopilotJsonlMetadata(filePath, stat) {
+  _loadCopilotParsedCache();
+  const cacheKey = filePath + '|' + stat.mtimeMs + '|' + stat.size;
+  if (_copilotParsedCache[cacheKey]) return _copilotParsedCache[cacheKey];
+
+  let creationDate = 0, msgCount = 0, firstMsg = '';
+  const lines = readLines(filePath);
+  for (const line of lines) {
+    if (line.startsWith('{"kind":0')) {
+      const cdMatch = line.match(/"creationDate"\s*:\s*(\d+)/);
+      if (cdMatch) creationDate = parseInt(cdMatch[1]);
+      continue;
+    }
+    if (!_isCopilotLineRelevant(line)) continue;
+    let entry;
+    try { entry = JSON.parse(line); } catch { continue; }
+    if (entry.kind === 2 && Array.isArray(entry.k) && entry.k.length === 1 && entry.k[0] === 'requests' && Array.isArray(entry.v)) {
+      for (const req of entry.v) {
+        msgCount++;
+        if (!firstMsg && req.message && req.message.text) {
+          firstMsg = req.message.text.slice(0, 200);
+        }
+      }
+    }
+  }
+
+  const result = { creationDate, msgCount, firstMsg };
+  _copilotParsedCache[cacheKey] = result;
+  return result;
+}
+
+// Quick string check: does this JSONL line contain data we need?
+// Skip kind:1 mutations (inputState, modelState, hasPendingEdits, responderUsername, etc.)
+// and kind:2 splices to non-request paths — these often contain huge image byte arrays.
+function _isCopilotLineRelevant(line) {
+  // kind:0 (init) — always relevant
+  if (line.startsWith('{"kind":0')) return true;
+  // kind:2 with "requests" in path — relevant
+  if (line.startsWith('{"kind":2') && line.includes('"requests"')) return true;
+  // Everything else (kind:1, kind:2 without requests) — skip
+  return false;
+}
+
 // Parse a Copilot JSONL mutation file — targeted extraction of requests & responses
+// Performance: skips irrelevant lines (inputState, attachments with image byte arrays)
+// BEFORE calling JSON.parse, avoiding parsing multi-MB attachment lines.
 function parseCopilotJsonl(filePath) {
   const lines = readLines(filePath);
   let base = { requests: [] };
   const extraResponses = {}; // requestIndex -> [response items...]
 
   for (const line of lines) {
+    if (!_isCopilotLineRelevant(line)) continue;
+
     let entry;
     try { entry = JSON.parse(line); } catch { continue; }
 
     if (entry.kind === 0) {
-      // Initial state
-      base = entry.v || { requests: [] };
+      // Initial state — extract only what we need, discard attachments
+      const v = entry.v || {};
+      base = { requests: v.requests || [], creationDate: v.creationDate, sessionId: v.sessionId };
     } else if (entry.kind === 2) {
       const k = entry.k || [];
       if (k.length === 1 && k[0] === 'requests' && Array.isArray(entry.v)) {
@@ -702,7 +810,6 @@ function parseCopilotJsonl(filePath) {
         }
       }
     }
-    // kind:1 mutations (inputState, modelState, etc.) are not needed for message extraction
   }
 
   // Merge extra responses into requests
@@ -742,34 +849,12 @@ function scanCopilotSessions() {
       let creationDate = 0;
 
       try {
-        if (file.endsWith('.json')) {
-          // Full JSON: quick-parse for metadata
-          const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-          const reqs = data.requests || [];
-          msgCount = reqs.length;
-          creationDate = data.creationDate || 0;
-          if (reqs.length > 0 && reqs[0].message) {
-            firstMsg = (reqs[0].message.text || '').slice(0, 200);
-          }
-        } else {
-          // JSONL: read first line for init, scan for request splices
-          const lines = readLines(filePath);
-          for (const line of lines) {
-            let entry;
-            try { entry = JSON.parse(line); } catch { continue; }
-            if (entry.kind === 0 && entry.v) {
-              creationDate = entry.v.creationDate || 0;
-            }
-            if (entry.kind === 2 && Array.isArray(entry.k) && entry.k.length === 1 && entry.k[0] === 'requests' && Array.isArray(entry.v)) {
-              for (const req of entry.v) {
-                msgCount++;
-                if (!firstMsg && req.message && req.message.text) {
-                  firstMsg = req.message.text.slice(0, 200);
-                }
-              }
-            }
-          }
-        }
+        const meta = file.endsWith('.json')
+          ? scanCopilotJsonMetadata(filePath, stat)
+          : scanCopilotJsonlMetadata(filePath, stat);
+        creationDate = meta.creationDate;
+        msgCount = meta.msgCount;
+        firstMsg = meta.firstMsg;
       } catch {}
 
       if (msgCount === 0) continue; // skip sessions with no user messages
@@ -792,6 +877,7 @@ function scanCopilotSessions() {
     }
   }
 
+  _saveCopilotParsedCache();
   return sessions;
 }
 
