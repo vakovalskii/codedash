@@ -1412,7 +1412,7 @@ function scanCopilotSessions() {
       const sessionId = 'copilot-' + file.replace(/\.(json|jsonl)$/, '');
       sessions.push({
         id: sessionId,
-        tool: 'copilot',
+        tool: 'copilot-chat',
         project: folder,
         project_short: folder.replace(os.homedir(), '~'),
         first_ts: creationDate || stat.birthtimeMs || stat.mtimeMs,
@@ -2965,7 +2965,7 @@ function _buildSessionFileIndex() {
             if (f.endsWith('.json') || f.endsWith('.jsonl')) {
               const sid = 'copilot-' + f.replace(/\.(json|jsonl)$/, '');
               if (!_sessionFileIndex[sid]) {
-                _sessionFileIndex[sid] = { file: path.join(chatDir, f), format: 'copilot' };
+                _sessionFileIndex[sid] = { file: path.join(chatDir, f), format: 'copilot-chat' };
               }
             }
           }
@@ -3738,7 +3738,7 @@ function computeSessionCost(sessionId, project) {
   if (!found) { _costMemCache[sessionId] = EMPTY_COST; return EMPTY_COST; }
 
   // Skip formats that never have cost data
-  if (found.format === 'cursor' || found.format === 'kiro' || found.format === 'copilot') { _costMemCache[sessionId] = EMPTY_COST; return EMPTY_COST; }
+  if (found.format === 'cursor' || found.format === 'kiro' || found.format === 'copilot-chat') { _costMemCache[sessionId] = EMPTY_COST; return EMPTY_COST; }
 
   // Check disk cache (keyed by file path + mtime + size for JSONL, sessionId for SQLite)
   _loadCostDiskCache();
