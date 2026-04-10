@@ -4675,7 +4675,7 @@ function _computeSessionDailyBreakdown(s, found) {
 
   try {
     // Copilot: use optimized parser instead of line-by-line generic JSONL scan
-    if (found.format === 'copilot') {
+    if (found.format === 'copilot-chat') {
       let data;
       if (found.file.endsWith('.jsonl')) {
         data = parseCopilotJsonl(found.file);
