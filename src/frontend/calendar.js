@@ -184,6 +184,9 @@ function setView(view) {
   } else if (view === 'codex-only') {
     toolFilter = toolFilter === 'codex' ? null : 'codex';
     currentView = 'sessions';
+  } else if (view === 'qwen-only') {
+    toolFilter = toolFilter === 'qwen' ? null : 'qwen';
+    currentView = 'sessions';
   } else if (view === 'cursor-only') {
     toolFilter = toolFilter === 'cursor' ? null : 'cursor';
     currentView = 'sessions';

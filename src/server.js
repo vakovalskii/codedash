@@ -429,7 +429,7 @@ function startServer(host, port, openBrowser = true) {
   const bindAddr = host === 'localhost' ? DEFAULT_HOST : host;
   server.listen(port, bindAddr, () => {
     console.log('');
-    console.log('  \x1b[36m\x1b[1mcodedash\x1b[0m — Claude & Codex Sessions Dashboard');
+    console.log('  \x1b[36m\x1b[1mcodedash\x1b[0m — AI Coding Agent Sessions Dashboard');
     console.log(`  \x1b[2mbind ${bindAddr}:${port}\x1b[0m`);
     console.log(`  \x1b[2m${browserUrl}\x1b[0m`);
     if (host === '0.0.0.0' || host === '::' || host === '[::]') {
