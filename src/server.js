@@ -591,15 +591,36 @@ function startServer(host, port, openBrowser = true) {
       }
     }
 
-    // ── Embedding status ──────────────────────
+    // ── Embedding status + config ──────────────────────
     else if (req.method === 'GET' && pathname === '/api/embeddings/status') {
       let embeddings;
       try { embeddings = require('./embeddings'); } catch {}
       json(res, {
         available: embeddings ? embeddings.isAvailable() : false,
-        model: embeddings ? embeddings.MODEL_ID : null,
-        dim: embeddings ? embeddings.EMBEDDING_DIM : 0,
+        model: embeddings ? embeddings.getModelId() : null,
+        dim: embeddings ? embeddings.getModelDim() : 0,
         count: embeddings ? embeddings.getEmbeddingCount() : 0,
+        models: embeddings ? embeddings.MODELS : {},
+        config: embeddings ? embeddings.loadConfig() : {},
+        pipeline: {
+          rrf_k: embeddings ? embeddings.RRF_K : 60,
+          bm25_weight: embeddings ? embeddings.BM25_WEIGHT : 0.3,
+          embedding_weight: embeddings ? embeddings.EMBEDDING_WEIGHT : 0.7,
+        },
+      });
+    }
+
+    // ── Search utility tracking (for reranking) ──────
+    else if (req.method === 'POST' && pathname === '/api/search/utility') {
+      readBody(req, body => {
+        try {
+          const { sessionId, queryHash, outcome } = JSON.parse(body);
+          const embeddings = require('./embeddings');
+          embeddings.recordUtility(sessionId, queryHash, outcome || 'click');
+          json(res, { ok: true });
+        } catch (e) {
+          json(res, { ok: false, error: e.message }, 400);
+        }
       });
     }
 
