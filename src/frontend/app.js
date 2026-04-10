@@ -1752,6 +1752,18 @@ function openInCursor(project) {
   }).catch(function() { showToast('Failed to open Cursor'); });
 }
 
+function openInVSCode(project) {
+  if (!project) { showToast('No project path'); return; }
+  fetch('/api/open-ide', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ide: 'vscode', project: project })
+  }).then(function(r) { return r.json(); }).then(function(data) {
+    if (data.ok) showToast('Opening project in VS Code...');
+    else showToast('Failed: ' + (data.error || 'unknown'));
+  }).catch(function() { showToast('Failed to open VS Code'); });
+}
+
 // ── Handoff ───────────────────────────────────────────────────
 
 function downloadHandoff(sessionId, project) {
@@ -1784,6 +1796,12 @@ var AGENT_INSTALL = {
     cmd: 'curl -fsSL https://opencode.ai/install | bash',
     alt: 'npm i -g opencode-ai@latest',
     url: 'https://opencode.ai',
+  },
+  copilot: {
+    name: 'GitHub Copilot CLI',
+    cmd: 'curl -fsSL https://gh.io/copilot-install | bash',
+    alt: 'brew install copilot-cli',
+    url: 'https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli',
   },
 };
 
