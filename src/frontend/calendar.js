@@ -190,6 +190,9 @@ function setView(view) {
   } else if (view === 'kiro-only') {
     toolFilter = toolFilter === 'kiro' ? null : 'kiro';
     currentView = 'sessions';
+  } else if (view === 'copilot-only') {
+    toolFilter = toolFilter === 'copilot' ? null : 'copilot';
+    currentView = 'sessions';
   } else if (view === 'opencode-only') {
     toolFilter = toolFilter === 'opencode' ? null : 'opencode';
     currentView = 'sessions';
