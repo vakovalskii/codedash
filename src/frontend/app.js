@@ -1728,9 +1728,9 @@ var AGENT_INSTALL = {
   },
   copilot: {
     name: 'GitHub Copilot CLI',
-    cmd: 'npm i -g @github/copilot-language-server',
-    alt: 'gh extension install github/gh-copilot',
-    url: 'https://docs.github.com/en/copilot/using-github-copilot/using-github-copilot-in-the-command-line',
+    cmd: 'curl -fsSL https://gh.io/copilot-install | bash',
+    alt: 'brew install copilot-cli',
+    url: 'https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli',
   },
 };
 
