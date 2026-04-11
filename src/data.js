@@ -66,10 +66,10 @@ const EXTRA_OPENCODE_DBS = ALL_HOMES.slice(1).map(h => path.join(h, 'AppData', '
 const EXTRA_KIRO_DBS = ALL_HOMES.slice(1).map(h => path.join(h, 'AppData', 'Roaming', 'kiro-cli', 'data.sqlite3')).filter(d => fs.existsSync(d));
 
 if (IS_WSL) {
-  console.log('  \x1b[36m[WSL]\x1b[0m Detected Windows homes:', ALL_HOMES.slice(1).join(', '));
-  if (EXTRA_CLAUDE_DIRS.length) console.log('  \x1b[36m[WSL]\x1b[0m Extra Claude dirs:', EXTRA_CLAUDE_DIRS.join(', '));
-  if (EXTRA_CODEX_DIRS.length) console.log('  \x1b[36m[WSL]\x1b[0m Extra Codex dirs:', EXTRA_CODEX_DIRS.join(', '));
-  if (EXTRA_CURSOR_DIRS.length) console.log('  \x1b[36m[WSL]\x1b[0m Extra Cursor dirs:', EXTRA_CURSOR_DIRS.join(', '));
+  console.log('  \x1b[36m[WSL]\x1b[0m Also scanning Windows host homes:', ALL_HOMES.slice(1).join(', '));
+  if (EXTRA_CLAUDE_DIRS.length) console.log('  \x1b[36m[WSL]\x1b[0m Windows-side Claude dirs:', EXTRA_CLAUDE_DIRS.join(', '));
+  if (EXTRA_CODEX_DIRS.length) console.log('  \x1b[36m[WSL]\x1b[0m Windows-side Codex dirs:', EXTRA_CODEX_DIRS.join(', '));
+  if (EXTRA_CURSOR_DIRS.length) console.log('  \x1b[36m[WSL]\x1b[0m Windows-side Cursor dirs:', EXTRA_CURSOR_DIRS.join(', '));
 }
 
 // ── Helpers ────────────────────────────────────────────────
