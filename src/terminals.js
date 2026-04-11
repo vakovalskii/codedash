@@ -281,8 +281,17 @@ function openInTerminal(sessionId, tool, flags, projectDir, terminalId) {
       const winProjectDir = toWindowsPath(projectDir);
       if (tid === 'wsl-powershell') {
         const psInner = `$Host.UI.RawUI.WindowTitle='${tag}'; Set-Location -LiteralPath '${(winProjectDir || '.').replace(/'/g, "''")}'; ${cmd}`;
-        const psCmd = `Start-Process powershell -ArgumentList '-NoExit','-NoProfile','-Command','${psInner.replace(/'/g, "''")}'`;
-        execSync(`powershell.exe -NoProfile -Command ${JSON.stringify(psCmd)}`, { stdio: 'pipe' });
+        // execFileSync with an argv array avoids /bin/sh seeing $Host / $p etc.
+        // Start-Process -ArgumentList is the idiomatic way to detach a new
+        // console window from the caller.
+        execFileSync('powershell.exe', [
+          '-NoProfile',
+          '-Command',
+          'Start-Process',
+          'powershell',
+          '-ArgumentList',
+          `'-NoExit','-NoProfile','-Command','${psInner.replace(/'/g, "''")}'`,
+        ], { stdio: 'pipe' });
       } else {
         const args = ['-w', '0', 'new-tab', '--title', tag, '--suppressApplicationTitle'];
         if (winProjectDir) { args.push('--startingDirectory', winProjectDir); }
@@ -296,12 +305,18 @@ function openInTerminal(sessionId, tool, flags, projectDir, terminalId) {
     // wt.exe / powershell.exe / wsl.exe / bash stays safe.
     const scriptPath = writeWslLaunchScript(sessionId, fullCmd);
     const distro = wslDistro();
-    const distroArg = distro ? ` -d ${JSON.stringify(distro)}` : '';
+    const distroArg = distro ? ` -d '${distro.replace(/'/g, "''")}'` : '';
 
     if (tid === 'wsl-powershell') {
       const psInner = `$Host.UI.RawUI.WindowTitle='${tag}'; wsl.exe${distroArg} -- bash ${scriptPath.replace(/'/g, "''")}`;
-      const psCmd = `Start-Process powershell -ArgumentList '-NoExit','-NoProfile','-Command','${psInner.replace(/'/g, "''")}'`;
-      execSync(`powershell.exe -NoProfile -Command ${JSON.stringify(psCmd)}`, { stdio: 'pipe' });
+      execFileSync('powershell.exe', [
+        '-NoProfile',
+        '-Command',
+        'Start-Process',
+        'powershell',
+        '-ArgumentList',
+        `'-NoExit','-NoProfile','-Command','${psInner.replace(/'/g, "''")}'`,
+      ], { stdio: 'pipe' });
     } else {
       const args = [
         '-w', '0',

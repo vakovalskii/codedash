@@ -2,7 +2,7 @@
 const http = require('http');
 const https = require('https');
 const { URL } = require('url');
-const { exec, execFile } = require('child_process');
+const { exec, execFile, execFileSync } = require('child_process');
 const { loadSessions, loadSessionDetail, deleteSession, getGitCommits, exportSessionMarkdown, getSessionPreview, searchFullText, getActiveSessions, getSessionReplay, getCostAnalytics, computeSessionCost, getProjectGitInfo, getLeaderboardStats } = require('./data');
 const { detectTerminals, openInTerminal, focusTerminalByPid, isWSL } = require('./terminals');
 const { convertSession } = require('./convert');
@@ -458,9 +458,12 @@ function startServer(host, port, openBrowser = true) {
 function openIDE(ide, target) {
   const bin = ide === 'cursor' ? 'cursor' : 'code';
   const winBin = bin + '.exe';
+  const runLog = (err) => { if (err) log('ERROR', `${ide} open failed: ${err.message}`); };
 
   if (!isWSL()) {
-    exec(`${bin} "${target}"`);
+    // execFile with argv — a project path containing quotes or spaces must not
+    // get re-parsed by /bin/sh.
+    execFile(bin, [target], runLog);
     return;
   }
 
@@ -472,35 +475,35 @@ function openIDE(ide, target) {
     let winTarget = target;
     const m = target.match(/^\/mnt\/([a-z])\/(.*)$/i);
     if (m) winTarget = m[1].toUpperCase() + ':\\' + m[2].replace(/\//g, '\\');
-    execFile(winBin, [winTarget], (err) => {
-      if (err) log('ERROR', `${winBin} failed: ${err.message}`);
-    });
+    execFile(winBin, [winTarget], runLog);
     return;
   }
 
   // WSL-side project: prefer the Linux wrapper installed by the Remote-WSL
-  // extension since it handles path translation. Fall back to <bin>.exe with
-  // --remote wsl+<distro>.
+  // extension since it handles path translation. Probe via execFileSync('which')
+  // so a missing import would throw loudly instead of being swallowed.
   let hasWrapper = false;
   try {
-    execSync(`which ${bin}`, { stdio: 'pipe' });
+    execFileSync('which', [bin], { stdio: 'pipe' });
     hasWrapper = true;
-  } catch {}
+  } catch (e) {
+    if (e.code !== 1 && !/not found|No such/.test(e.message || '')) {
+      log('WARN', `which ${bin} probe error: ${e.message}`);
+    }
+  }
 
   if (hasWrapper) {
-    exec(`${bin} "${target}"`);
+    execFile(bin, [target], runLog);
     return;
   }
 
   const distro = process.env.WSL_DISTRO_NAME || '';
   if (!distro) {
     log('WARN', `openIDE: no WSL_DISTRO_NAME, cannot build --remote URI for ${winBin}`);
-    exec(`${winBin} "${target}"`);
+    execFile(winBin, [target], runLog);
     return;
   }
-  execFile(winBin, ['--remote', `wsl+${distro}`, target], (err) => {
-    if (err) log('ERROR', `${winBin} failed: ${err.message}`);
-  });
+  execFile(winBin, ['--remote', `wsl+${distro}`, target], runLog);
 }
 
 function sendHeartbeat() {
