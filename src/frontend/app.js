@@ -1575,7 +1575,7 @@ function focusSession(sessionId) {
   fetch('/api/focus', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ pid: a.pid })
+    body: JSON.stringify({ pid: a.pid, sessionId: sessionId })
   }).then(function(r) { return r.json(); }).then(function(data) {
     if (data.ok) {
       var hint = data.terminal || 'terminal';

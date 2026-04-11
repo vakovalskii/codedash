@@ -4,7 +4,7 @@ const https = require('https');
 const { URL } = require('url');
 const { exec, execFile } = require('child_process');
 const { loadSessions, loadSessionDetail, deleteSession, getGitCommits, exportSessionMarkdown, getSessionPreview, searchFullText, getActiveSessions, getSessionReplay, getCostAnalytics, computeSessionCost, getProjectGitInfo, getLeaderboardStats } = require('./data');
-const { detectTerminals, openInTerminal, focusTerminalByPid } = require('./terminals');
+const { detectTerminals, openInTerminal, focusTerminalByPid, isWSL } = require('./terminals');
 const { convertSession } = require('./convert');
 const { generateHandoff } = require('./handoff');
 const { CHANGELOG } = require('./changelog');
@@ -198,11 +198,7 @@ function startServer(host, port, openBrowser = true) {
             target = require('path').dirname(target);
           }
           log('IDE', `ide=${ide} project=${project} target=${target}`);
-          if (ide === 'cursor') {
-            exec(`cursor "${target || '.'}"`);
-          } else if (ide === 'code') {
-            exec(`code "${target || '.'}"`);
-          }
+          openIDE(ide, target || '.');
           json(res, { ok: true });
         } catch (e) {
           json(res, { ok: false, error: e.message }, 400);
@@ -244,9 +240,9 @@ function startServer(host, port, openBrowser = true) {
     else if (req.method === 'POST' && pathname === '/api/focus') {
       readBody(req, body => {
         try {
-          const { pid } = JSON.parse(body);
-          log('FOCUS', `pid=${pid}`);
-          const result = focusTerminalByPid(pid);
+          const { pid, sessionId } = JSON.parse(body);
+          log('FOCUS', `pid=${pid} sessionId=${sessionId || '(none)'}`);
+          const result = focusTerminalByPid(pid, sessionId);
           log('FOCUS', `result: terminal=${result.terminal || 'none'} ok=${result.ok}`);
           json(res, result);
         } catch (e) {
@@ -441,8 +437,14 @@ function startServer(host, port, openBrowser = true) {
     if (openBrowser) {
       if (process.platform === 'darwin') {
         execFile('open', [browserUrl]);
-      } else if (process.platform === 'linux') {
+      } else if (process.platform === 'linux' && !isWSL()) {
         execFile('xdg-open', [browserUrl]);
+      } else if (isWSL()) {
+        // In WSL the browser lives on the Windows host. xdg-open inside WSL
+        // typically fails or opens a Linux-side browser that nobody is looking
+        // at. Print the URL and let the user click it from Windows.
+        console.log('  \x1b[33mWSL detected — open this URL in your Windows browser:\x1b[0m');
+        console.log(`  \x1b[36m${browserUrl}\x1b[0m`);
       }
     }
 
@@ -450,6 +452,54 @@ function startServer(host, port, openBrowser = true) {
     setTimeout(sendHeartbeat, 5000);
     setTimeout(autoSync, 15000); // first sync 15s after start
     setInterval(autoSync, 300000); // then every 5 min
+  });
+}
+
+function openIDE(ide, target) {
+  const bin = ide === 'cursor' ? 'cursor' : 'code';
+  const winBin = bin + '.exe';
+
+  if (!isWSL()) {
+    exec(`${bin} "${target}"`);
+    return;
+  }
+
+  // WSL: branch on whether the project lives on the Windows side or inside WSL.
+  const isWinSide = /^[A-Za-z]:[\\/]/.test(target) || target.includes('\\') || /^\/mnt\/[a-z]\//i.test(target);
+
+  if (isWinSide) {
+    // Translate /mnt/c/... back to C:\... and open natively on Windows.
+    let winTarget = target;
+    const m = target.match(/^\/mnt\/([a-z])\/(.*)$/i);
+    if (m) winTarget = m[1].toUpperCase() + ':\\' + m[2].replace(/\//g, '\\');
+    execFile(winBin, [winTarget], (err) => {
+      if (err) log('ERROR', `${winBin} failed: ${err.message}`);
+    });
+    return;
+  }
+
+  // WSL-side project: prefer the Linux wrapper installed by the Remote-WSL
+  // extension since it handles path translation. Fall back to <bin>.exe with
+  // --remote wsl+<distro>.
+  let hasWrapper = false;
+  try {
+    execSync(`which ${bin}`, { stdio: 'pipe' });
+    hasWrapper = true;
+  } catch {}
+
+  if (hasWrapper) {
+    exec(`${bin} "${target}"`);
+    return;
+  }
+
+  const distro = process.env.WSL_DISTRO_NAME || '';
+  if (!distro) {
+    log('WARN', `openIDE: no WSL_DISTRO_NAME, cannot build --remote URI for ${winBin}`);
+    exec(`${winBin} "${target}"`);
+    return;
+  }
+  execFile(winBin, ['--remote', `wsl+${distro}`, target], (err) => {
+    if (err) log('ERROR', `${winBin} failed: ${err.message}`);
   });
 }
 
