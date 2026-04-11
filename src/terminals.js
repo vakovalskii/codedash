@@ -306,11 +306,11 @@ function openInTerminal(sessionId, tool, flags, projectDir, terminalId) {
           `'-NoExit','-NoProfile','-Command','${psInner.replace(/'/g, "''")}'`,
         ], { stdio: 'pipe' });
       } else {
-        // `-w new` creates a fresh Windows Terminal window per session so
-        // focusTerminalByPid can later EnumWindows by the pinned title.
-        // Reusing `-w 0` would stack tabs and break focus, because the OS
-        // window title only ever reflects the currently active tab.
-        const args = ['-w', 'new', 'new-tab', '--title', tag, '--suppressApplicationTitle'];
+        // `-w 0` targets the current/MRU window so the session opens as a
+        // new tab instead of a new window. wt falls back to creating a
+        // fresh window if none exists, so no special handling needed.
+        // Focus later selects the right tab via UIA, not MainWindowTitle.
+        const args = ['-w', '0', 'new-tab', '--title', tag, '--suppressApplicationTitle'];
         if (winProjectDir) { args.push('--startingDirectory', winProjectDir); }
         args.push('cmd.exe', '/k', cmd);
         execFileSafe('wt.exe', args);
@@ -335,10 +335,10 @@ function openInTerminal(sessionId, tool, flags, projectDir, terminalId) {
         `'-NoExit','-NoProfile','-Command','${psInner.replace(/'/g, "''")}'`,
       ], { stdio: 'pipe' });
     } else {
-      // `-w new` — see comment above; one window per session keeps focus
-      // reliable.
+      // `-w 0` — see comment above; reuse the current wt window as a new
+      // tab and let UIA-based focus pick the right one later.
       const args = [
-        '-w', 'new',
+        '-w', '0',
         'new-tab',
         '--title', tag,
         '--suppressApplicationTitle',
