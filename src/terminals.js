@@ -325,7 +325,7 @@ function openInTerminal(sessionId, tool, flags, projectDir, terminalId) {
     const distroArg = distro ? ` -d '${distro.replace(/'/g, "''")}'` : '';
 
     if (tid === 'wsl-powershell') {
-      const psInner = `$Host.UI.RawUI.WindowTitle='${tag}'; wsl.exe${distroArg} -- bash -l ${scriptPath.replace(/'/g, "''")}`;
+      const psInner = `$Host.UI.RawUI.WindowTitle='${tag}'; wsl.exe${distroArg} -- bash -li ${scriptPath.replace(/'/g, "''")}`;
       execFileSync('powershell.exe', [
         '-NoProfile',
         '-Command',
@@ -345,7 +345,7 @@ function openInTerminal(sessionId, tool, flags, projectDir, terminalId) {
         'wsl.exe',
       ];
       if (distro) { args.push('-d', distro); }
-      args.push('--', 'bash', '-l', scriptPath);
+      args.push('--', 'bash', '-li', scriptPath);
       execFileSafe('wt.exe', args);
     }
     // bash reads the script on startup; 60 s is plenty. fs.rm with recursive
