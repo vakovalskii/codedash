@@ -1,4 +1,4 @@
-# CodeDash
+# Codbash
 
 Dashboard + CLI for AI coding agent sessions. View, search, resume, convert, and hand off between 5 agents.
 
