@@ -279,7 +279,9 @@ function launchSession(sessionId, tool, project, flags) {
 function copyResume(sessionId, tool) {
   var s = allSessions.find(function(x) { return x.id === sessionId; });
   var cmd;
-  if (tool === 'codex') {
+  if (tool === 'droid') {
+    cmd = 'droid --resume ' + sessionId;
+  } else if (tool === 'codex') {
     cmd = 'codex resume ' + sessionId;
   } else if (tool === 'kilo') {
     cmd = 'kilo resume ' + sessionId;

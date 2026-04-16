@@ -1792,6 +1792,12 @@ var AGENT_INSTALL = {
     alt: null,
     url: 'https://kilo.ai',
   },
+  droid: {
+    name: 'Factory Droid',
+    cmd: 'curl -fsSL https://app.factory.ai/cli | sh',
+    alt: 'npm i -g droid',
+    url: 'https://factory.ai',
+  },
 };
 
 function installAgent(agent) {
