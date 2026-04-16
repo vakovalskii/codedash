@@ -62,8 +62,8 @@ const CHANGELOG = [
     date: '2026-04-05',
     title: 'Session handoff between agents',
     changes: [
-      'codedash handoff <id> [target] — generate context document',
-      'Quick handoff: codedash handoff claude codex',
+      'codbash handoff <id> [target] — generate context document',
+      'Quick handoff: codbash handoff claude codex',
       'Verbosity levels: minimal, standard, verbose, full',
       'Handoff button in detail panel',
       'Node >= 18',
@@ -94,7 +94,7 @@ const CHANGELOG = [
     title: 'Cross-agent session conversion',
     changes: [
       'Convert sessions between Claude Code and Codex CLI',
-      'CLI: codedash convert <id> claude/codex',
+      'CLI: codbash convert <id> claude/codex',
       'Convert button in session detail panel',
       'Atomic writes for safety',
     ],
@@ -104,8 +104,8 @@ const CHANGELOG = [
     date: '2026-04-04',
     title: 'CLI search, show, docs',
     changes: [
-      'codedash search <query> — full-text search from terminal',
-      'codedash show <id> — session details with cost and messages',
+      'codbash search <query> — full-text search from terminal',
+      'codbash show <id> — session details with cost and messages',
       'CLAUDE.md and architecture documentation',
     ],
   },
@@ -180,7 +180,7 @@ const CHANGELOG = [
       'Fixed tag dropdown positioning',
       'In-memory search index (263ms build, 60s cache)',
       'Export/Import dialog in sidebar',
-      'codedash update/restart/stop commands',
+      'codbash update/restart/stop commands',
     ],
   },
   {
@@ -208,8 +208,8 @@ const CHANGELOG = [
     date: '2026-04-03',
     title: 'Export/Import for PC migration',
     changes: [
-      'codedash export — archive all sessions as tar.gz',
-      'codedash import — restore on new machine',
+      'codbash export — archive all sessions as tar.gz',
+      'codbash import — restore on new machine',
     ],
   },
   {

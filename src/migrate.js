@@ -90,7 +90,7 @@ function exportArchive(outPath) {
   }
 
   console.log('');
-  console.log('  \x1b[36m\x1b[1mCodeDash Export\x1b[0m');
+  console.log('  \x1b[36m\x1b[1mCodBash Export\x1b[0m');
   console.log(`  Files: ${totalFiles}`);
   console.log(`  Paths: ${paths.length} directories/files`);
   console.log(`  Includes: ${paths.map(p => p.split('/')[0]).filter((v,i,a) => a.indexOf(v) === i).join(', ')}`);
@@ -108,7 +108,7 @@ function exportArchive(outPath) {
     console.log(`  \x1b[32mDone!\x1b[0m ${absOut} (${sizeMB} MB)`);
     console.log('');
     console.log('  To import on another machine:');
-    console.log(`  \x1b[2mnpx codedash-app import ${path.basename(absOut)}\x1b[0m`);
+    console.log(`  \x1b[2mnpx codbash import ${path.basename(absOut)}\x1b[0m`);
     console.log('');
   } catch (e) {
     console.error('  \x1b[31mFailed to create archive:\x1b[0m', e.message);
@@ -125,7 +125,7 @@ function importArchive(archivePath) {
   }
 
   console.log('');
-  console.log('  \x1b[36m\x1b[1mCodeDash Import\x1b[0m');
+  console.log('  \x1b[36m\x1b[1mCodBash Import\x1b[0m');
   console.log(`  Archive: ${absPath}`);
 
   // List contents
@@ -174,7 +174,7 @@ function importArchive(archivePath) {
     }
 
     console.log('  \x1b[32mImport complete!\x1b[0m');
-    console.log('  Run \x1b[2mcodedash run\x1b[0m to see your sessions.');
+    console.log('  Run \x1b[2mcodbash run\x1b[0m to see your sessions.');
     console.log('');
   } catch (e) {
     console.error('  \x1b[31mFailed to import:\x1b[0m', e.message);

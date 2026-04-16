@@ -78,7 +78,7 @@ function cloudRequest(method, reqPath, token, body, headers) {
       path: url.pathname + url.search,
       method,
       headers: {
-        'User-Agent': 'codedash',
+        'User-Agent': 'codbash',
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
         ...headers,
       },
@@ -253,7 +253,7 @@ function deserializeSession(canonical) {
 async function ensureAuth() {
   const profile = loadProfile();
   if (!profile) {
-    console.error('\n  Not connected to GitHub. Run: codedash run → connect in dashboard\n');
+    console.error('\n  Not connected to GitHub. Run: codbash run → connect in dashboard\n');
     process.exit(1);
   }
 
@@ -345,17 +345,17 @@ async function cloudCLI(args) {
 
   if (!action || action === 'help') {
     console.log(`
-  \x1b[36m\x1b[1mcodedash cloud\x1b[0m — Cloud Session Sync
+  \x1b[36m\x1b[1mcodbash cloud\x1b[0m — Cloud Session Sync
 
   \x1b[1mCommands:\x1b[0m
-    codedash cloud setup              Set encryption passphrase
-    codedash cloud push <id>          Upload session to cloud
-    codedash cloud push --all         Upload all sessions
-    codedash cloud pull <id>          Download session from cloud
-    codedash cloud pull --all         Download all new sessions
-    codedash cloud list               List cloud sessions
-    codedash cloud delete <id>        Delete cloud session
-    codedash cloud status             Show account stats
+    codbash cloud setup              Set encryption passphrase
+    codbash cloud push <id>          Upload session to cloud
+    codbash cloud push --all         Upload all sessions
+    codbash cloud pull <id>          Download session from cloud
+    codbash cloud pull --all         Download all new sessions
+    codbash cloud list               List cloud sessions
+    codbash cloud delete <id>        Delete cloud session
+    codbash cloud status             Show account stats
 `);
     return;
   }
@@ -406,7 +406,7 @@ async function cloudCLI(args) {
     }
 
     if (!target) {
-      console.error('  Usage: codedash cloud push <session-id> or --all\n');
+      console.error('  Usage: codbash cloud push <session-id> or --all\n');
       process.exit(1);
     }
 
@@ -447,7 +447,7 @@ async function cloudCLI(args) {
     }
 
     if (!target) {
-      console.error('  Usage: codedash cloud pull <session-id> or --all\n');
+      console.error('  Usage: codbash cloud pull <session-id> or --all\n');
       process.exit(1);
     }
 
@@ -467,7 +467,7 @@ async function cloudCLI(args) {
     const { sessions, total } = res.data;
     console.log(`\n  Cloud Sessions (${total} total)\n`);
     if (sessions.length === 0) {
-      console.log('  No sessions in cloud yet. Use: codedash cloud push <id>\n');
+      console.log('  No sessions in cloud yet. Use: codbash cloud push <id>\n');
       return;
     }
 
@@ -482,7 +482,7 @@ async function cloudCLI(args) {
 
   if (action === 'delete') {
     const target = args[1];
-    if (!target) { console.error('  Usage: codedash cloud delete <session-id>\n'); return; }
+    if (!target) { console.error('  Usage: codbash cloud delete <session-id>\n'); return; }
     const { profile } = await ensureAuth();
     const res = await cloudRequest('DELETE', `/api/sessions/${encodeURIComponent(target)}`, profile.token);
     if (res.status === 200) console.log(`  Deleted: ${target}\n`);
@@ -505,7 +505,7 @@ async function cloudCLI(args) {
     return;
   }
 
-  console.error(`  Unknown command: cloud ${action}. Run: codedash cloud help\n`);
+  console.error(`  Unknown command: cloud ${action}. Run: codbash cloud help\n`);
 }
 
 // ── Push / Pull helpers ──────────────────────

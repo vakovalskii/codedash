@@ -1,8 +1,9 @@
 {
-  "name": "codedash-app",
-  "version": "6.16.4",
-  "description": "Dashboard + CLI for Claude Code, Codex & OpenCode sessions. View, search, resume, convert, handoff between agents.",
+  "name": "codbash",
+  "version": "7.0.0",
+  "description": "Dashboard + CLI for AI coding agents — Claude Code, Codex, Cursor, OpenCode, Kiro. View, search, resume, convert, sync sessions.",
   "bin": {
+    "codbash": "./bin/cli.js",
     "codedash": "./bin/cli.js"
   },
   "files": [
@@ -10,23 +11,28 @@
     "src/"
   ],
   "keywords": [
+    "codbash",
+    "codedash",
     "claude",
     "claude-code",
     "codex",
+    "cursor",
+    "opencode",
+    "kiro",
+    "ai-agents",
     "sessions",
     "dashboard",
     "terminal",
-    "iterm2",
     "cli",
     "devtools"
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/vakovalskii/codedash.git"
+    "url": "git+https://github.com/vakovalskii/codbash.git"
   },
-  "homepage": "https://github.com/vakovalskii/codedash#readme",
+  "homepage": "https://github.com/vakovalskii/codbash#readme",
   "bugs": {
-    "url": "https://github.com/vakovalskii/codedash/issues"
+    "url": "https://github.com/vakovalskii/codbash/issues"
   },
   "author": "Valerii Kovalskii",
   "license": "MIT",

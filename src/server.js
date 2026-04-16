@@ -429,7 +429,7 @@ function startServer(host, port, openBrowser = true) {
   const bindAddr = host === 'localhost' ? DEFAULT_HOST : host;
   server.listen(port, bindAddr, () => {
     console.log('');
-    console.log('  \x1b[36m\x1b[1mcodedash\x1b[0m — Claude & Codex Sessions Dashboard');
+    console.log('  \x1b[36m\x1b[1mcodbash\x1b[0m — Claude & Codex Sessions Dashboard');
     console.log(`  \x1b[2mbind ${bindAddr}:${port}\x1b[0m`);
     console.log(`  \x1b[2m${browserUrl}\x1b[0m`);
     if (host === '0.0.0.0' || host === '::' || host === '[::]') {
@@ -501,7 +501,7 @@ function getCloudKey() {
 
 function unlockCloudKey(passphrase) {
   const keyData = loadCloudKey();
-  if (!keyData || !keyData.salt) return { error: 'Run "codedash cloud setup" in terminal first' };
+  if (!keyData || !keyData.salt) return { error: 'Run "codbash cloud setup" in terminal first' };
 
   const salt = Buffer.from(keyData.salt, 'hex');
   const key = deriveKey(passphrase, salt);
@@ -817,7 +817,7 @@ function githubRequest(hostname, reqPath, method, body) {
     const bodyStr = typeof body === 'string' ? body : (body ? JSON.stringify(body) : '');
     const options = {
       hostname, path: reqPath, method: method || 'POST',
-      headers: { 'Accept': 'application/json', 'Content-Type': 'application/json', 'User-Agent': 'codedash' },
+      headers: { 'Accept': 'application/json', 'Content-Type': 'application/json', 'User-Agent': 'codbash' },
       timeout: 15000,
     };
     if (bodyStr) options.headers['Content-Length'] = Buffer.byteLength(bodyStr);
@@ -853,7 +853,7 @@ async function githubPollToken(deviceCode) {
   // Fetch user profile with token
   const user = await new Promise((resolve, reject) => {
     const req = https.request({ hostname: 'api.github.com', path: '/user', method: 'GET',
-      headers: { 'Authorization': `Bearer ${data.access_token}`, 'Accept': 'application/json', 'User-Agent': 'codedash' },
+      headers: { 'Authorization': `Bearer ${data.access_token}`, 'Accept': 'application/json', 'User-Agent': 'codbash' },
       timeout: 10000,
     }, (res) => { let d = ''; res.on('data', c => d += c); res.on('end', () => { try { resolve(JSON.parse(d)); } catch { reject(new Error('parse error')); } }); });
     req.on('error', reject);

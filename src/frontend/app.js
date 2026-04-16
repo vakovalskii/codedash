@@ -1,4 +1,4 @@
-// ── codedash frontend ──────────────────────────────────────────
+// ── codbash frontend ──────────────────────────────────────────
 // Plain browser JS, no modules, no build step.
 
 // ── State ──────────────────────────────────────────────────────
@@ -1816,16 +1816,16 @@ function showExportDialog() {
   document.getElementById('confirmTitle').textContent = 'Export / Import Sessions';
   document.getElementById('confirmText').innerHTML =
     '<strong>Export</strong> all sessions to migrate to another PC:<br>' +
-    '<code style="display:block;margin:8px 0;padding:8px;background:var(--bg-card);border-radius:6px;font-size:12px">codedash export</code>' +
+    '<code style="display:block;margin:8px 0;padding:8px;background:var(--bg-card);border-radius:6px;font-size:12px">codbash export</code>' +
     'Creates a tar.gz with all Claude &amp; Codex session data.<br><br>' +
     '<strong>Import</strong> on the new machine:<br>' +
-    '<code style="display:block;margin:8px 0;padding:8px;background:var(--bg-card);border-radius:6px;font-size:12px">codedash import &lt;file.tar.gz&gt;</code>' +
+    '<code style="display:block;margin:8px 0;padding:8px;background:var(--bg-card);border-radius:6px;font-size:12px">codbash import &lt;file.tar.gz&gt;</code>' +
     '<br><em style="color:var(--text-muted);font-size:12px">Don\'t forget to clone your git repos separately.</em>';
   document.getElementById('confirmId').textContent = '';
   document.getElementById('confirmAction').textContent = 'Copy Export Command';
   document.getElementById('confirmAction').className = 'launch-btn btn-primary';
   document.getElementById('confirmAction').onclick = function() {
-    copyText('codedash export', 'Copied: codedash export');
+    copyText('codbash export', 'Copied: codbash export');
     closeConfirm();
   };
   if (overlay) overlay.style.display = 'flex';
@@ -1856,22 +1856,22 @@ async function checkForUpdates() {
         badge.classList.add('update-available');
         badge.title = 'Click to copy update command';
         badge.onclick = function() {
-          copyText('npm i -g codedash-app@latest', 'Copied: npm i -g codedash-app@latest');
+          copyText('npm i -g codbash@latest', 'Copied: npm i -g codbash@latest');
         };
       }
       var banner = document.getElementById('updateBanner');
       var text = document.getElementById('updateText');
       if (banner && text) {
-        text.textContent = 'v' + data.latest + ' available — run: npm i -g codedash-app@latest';
+        text.textContent = 'v' + data.latest + ' available — run: npm i -g codbash@latest';
         banner.style.display = 'flex';
-        banner.dataset.cmd = 'npm i -g codedash-app@latest';
+        banner.dataset.cmd = 'npm i -g codbash@latest';
       }
     }
   } catch {}
 }
 
 function copyUpdate() {
-  var cmd = 'codedash update && codedash restart';
+  var cmd = 'codbash update && codbash restart';
   copyText(cmd, 'Copied: ' + cmd + '  (run in terminal)');
 }
 

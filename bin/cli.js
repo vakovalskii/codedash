@@ -1,11 +1,18 @@
 #!/usr/bin/env node
 
-// Node.js version check — codedash requires Node >= 18
+// Node.js version check — codbash requires Node >= 18
 var nodeVersion = parseInt(process.versions.node.split('.')[0], 10);
 if (nodeVersion < 18) {
-  console.error('\n  codedash requires Node.js >= 18 (you have ' + process.version + ')');
+  console.error('\n  codbash requires Node.js >= 18 (you have ' + process.version + ')');
   console.error('  Install latest: https://nodejs.org/\n');
   process.exit(1);
+}
+
+// One-time migration notice for old binary name
+if (process.argv[1] && process.argv[1].includes('codedash') && !process.argv[1].includes('codbash')) {
+  console.log('\n  \x1b[33mNotice:\x1b[0m codedash-app has been renamed to \x1b[1mcodbash\x1b[0m.');
+  console.log('  Install the new package: \x1b[2mnpm i -g codbash\x1b[0m');
+  console.log('  The old binary still works but will be removed in a future version.\n');
 }
 
 const { loadSessions, searchFullText, getSessionPreview, computeSessionCost } = require('../src/data');
@@ -43,7 +50,7 @@ switch (command) {
       const proj = s.project_short || '';
       console.log(`  ${tool}  ${s.id.slice(0, 12)}  ${s.last_time}  ${msg}  \x1b[2m${proj}\x1b[0m`);
     }
-    if (sessions.length > limit) console.log(`\n  \x1b[2m... and ${sessions.length - limit} more (codedash list ${limit + 20})\x1b[0m`);
+    if (sessions.length > limit) console.log(`\n  \x1b[2m... and ${sessions.length - limit} more (codbash list ${limit + 20})\x1b[0m`);
     console.log('');
     break;
   }
@@ -75,7 +82,7 @@ switch (command) {
   case 'find': {
     const query = args.slice(1).join(' ');
     if (!query) {
-      console.error('  Usage: codedash search <query>');
+      console.error('  Usage: codbash search <query>');
       process.exit(1);
     }
     const sessions = loadSessions();
@@ -104,7 +111,7 @@ switch (command) {
   case 'show': {
     const sid = args[1];
     if (!sid) {
-      console.error('  Usage: codedash show <session-id>');
+      console.error('  Usage: codbash show <session-id>');
       process.exit(1);
     }
     const allS = loadSessions();
@@ -156,7 +163,7 @@ switch (command) {
       console.log(`
   \x1b[36m\x1b[1mHandoff session to another agent\x1b[0m
 
-  Usage: codedash handoff <session-id> [target] [options]
+  Usage: codbash handoff <session-id> [target] [options]
 
   Generates a context document for continuing a session in another tool.
 
@@ -166,13 +173,13 @@ switch (command) {
     --out=file.md  (save to file instead of stdout)
 
   Examples:
-    codedash handoff 13ae5748                    Print handoff doc
-    codedash handoff 13ae5748 codex              For Codex specifically
-    codedash handoff 13ae5748 --verbosity=full   Include more context
-    codedash handoff 13ae5748 --out=handoff.md   Save to file
+    codbash handoff 13ae5748                    Print handoff doc
+    codbash handoff 13ae5748 codex              For Codex specifically
+    codbash handoff 13ae5748 --verbosity=full   Include more context
+    codbash handoff 13ae5748 --out=handoff.md   Save to file
 
   Quick handoff (latest session):
-    codedash handoff claude codex                Latest Claude → Codex
+    codbash handoff claude codex                Latest Claude → Codex
 `);
       break;
     }
@@ -215,13 +222,13 @@ switch (command) {
       console.log(`
   \x1b[36m\x1b[1mConvert session between agents\x1b[0m
 
-  Usage: codedash convert <session-id> <target-format>
+  Usage: codbash convert <session-id> <target-format>
 
   Formats: claude, codex
 
   Examples:
-    codedash convert 019d54ed codex     Convert Claude session to Codex
-    codedash convert 13ae5748 claude    Convert Codex session to Claude
+    codbash convert 019d54ed codex     Convert Claude session to Codex
+    codbash convert 13ae5748 claude    Convert Codex session to Claude
 `);
       break;
     }
@@ -249,14 +256,14 @@ switch (command) {
   case 'update':
   case 'upgrade': {
     const { execSync: execU } = require('child_process');
-    console.log('\n  \x1b[36m\x1b[1mUpdating codedash-app...\x1b[0m\n');
+    console.log('\n  \x1b[36m\x1b[1mUpdating codbash...\x1b[0m\n');
     try {
-      execU('npm i -g codedash-app@latest', { stdio: 'inherit' });
+      execU('npm i -g codbash@latest', { stdio: 'inherit' });
       const newPkg = require('../package.json');
       console.log(`\n  \x1b[32mUpdated to v${newPkg.version}!\x1b[0m`);
-      console.log('  Run \x1b[2mcodedash restart\x1b[0m to apply.\n');
+      console.log('  Run \x1b[2mcodbash restart\x1b[0m to apply.\n');
     } catch (e) {
-      console.error('  \x1b[31mUpdate failed.\x1b[0m Try: npm i -g codedash-app@latest\n');
+      console.error('  \x1b[31mUpdate failed.\x1b[0m Try: npm i -g codbash@latest\n');
     }
     break;
   }
@@ -267,7 +274,7 @@ switch (command) {
     const port = portArg ? parseInt(portArg.split('=')[1]) : DEFAULT_PORT;
     const hostArg = args.find(a => a.startsWith('--host='));
     const host = hostArg ? hostArg.split('=')[1] : (process.env.CODEDASH_HOST || DEFAULT_HOST);
-    console.log(`\n  Stopping codedash on port ${port}...`);
+    console.log(`\n  Stopping codbash on port ${port}...`);
     try {
       execSync(`lsof -ti:${port} | xargs kill -9 2>/dev/null`, { stdio: 'pipe' });
       console.log('  Stopped.');
@@ -288,15 +295,15 @@ switch (command) {
     const p = pArg ? parseInt(pArg.split('=')[1]) : DEFAULT_PORT;
     try {
       execS(`lsof -ti:${p} | xargs kill -9 2>/dev/null`, { stdio: 'pipe' });
-      console.log(`\n  codedash stopped (port ${p})\n`);
+      console.log(`\n  codbash stopped (port ${p})\n`);
     } catch {
-      console.log(`\n  No codedash running on port ${p}\n`);
+      console.log(`\n  No codbash running on port ${p}\n`);
     }
     break;
   }
 
   case 'export': {
-    const outPath = args[1] || `codedash-export-${new Date().toISOString().slice(0,10)}.tar.gz`;
+    const outPath = args[1] || `codbash-export-${new Date().toISOString().slice(0,10)}.tar.gz`;
     exportArchive(outPath);
     break;
   }
@@ -304,7 +311,7 @@ switch (command) {
   case 'import': {
     const archivePath = args[1];
     if (!archivePath) {
-      console.error('  Usage: codedash import <archive.tar.gz>');
+      console.error('  Usage: codbash import <archive.tar.gz>');
       process.exit(1);
     }
     importArchive(archivePath);
@@ -332,24 +339,24 @@ switch (command) {
   case '--help':
   default:
     console.log(`
-  \x1b[36m\x1b[1mcodedash\x1b[0m — Claude & Codex Sessions Dashboard
+  \x1b[36m\x1b[1mcodbash\x1b[0m — Claude & Codex Sessions Dashboard
 
   \x1b[1mUsage:\x1b[0m
-    codedash run [port] [--no-browser]   Start the dashboard server
-    codedash search <query>              Search across all session messages
-    codedash show <session-id>           Show session details + messages
-    codedash list [limit]                List sessions in terminal
-    codedash stats                       Show session statistics
-    codedash handoff <id> [target]       Generate handoff document
-    codedash convert <id> <format>       Convert session (claude/codex)
-    codedash export [file.tar.gz]        Export all sessions to archive
-    codedash import <file.tar.gz>        Import sessions from archive
-    codedash cloud <command>             Cloud session sync (setup/push/pull/list/status)
-    codedash update                      Update to latest version
-    codedash restart [--port=N]          Restart the server
-    codedash stop [--port=N]             Stop the server
-    codedash help                        Show this help
-    codedash version                     Show version
+    codbash run [port] [--no-browser]   Start the dashboard server
+    codbash search <query>              Search across all session messages
+    codbash show <session-id>           Show session details + messages
+    codbash list [limit]                List sessions in terminal
+    codbash stats                       Show session statistics
+    codbash handoff <id> [target]       Generate handoff document
+    codbash convert <id> <format>       Convert session (claude/codex)
+    codbash export [file.tar.gz]        Export all sessions to archive
+    codbash import <file.tar.gz>        Import sessions from archive
+    codbash cloud <command>             Cloud session sync (setup/push/pull/list/status)
+    codbash update                      Update to latest version
+    codbash restart [--port=N]          Restart the server
+    codbash stop [--port=N]             Stop the server
+    codbash help                        Show this help
+    codbash version                     Show version
 
   \x1b[1mServer options:\x1b[0m
     --port=N                             Listen on port N (default: ${DEFAULT_PORT})
@@ -360,12 +367,12 @@ switch (command) {
     CODEDASH_HOST                        Bind address (same as --host)
 
   \x1b[1mExamples:\x1b[0m
-    codedash run                         Start on port ${DEFAULT_PORT}
-    codedash run --port=4000             Start on port 4000
-    codedash run --host=0.0.0.0          Listen on all interfaces
-    codedash run --no-browser            Start without opening browser
-    codedash list 50                     Show last 50 sessions
-    codedash ls                          Alias for list
+    codbash run                         Start on port ${DEFAULT_PORT}
+    codbash run --port=4000             Start on port 4000
+    codbash run --host=0.0.0.0          Listen on all interfaces
+    codbash run --no-browser            Start without opening browser
+    codbash list 50                     Show last 50 sessions
+    codbash ls                          Alias for list
 `);
     if (!['help', '-h', '--help'].includes(command)) {
       console.log(`  Unknown command: ${command}\n`);
