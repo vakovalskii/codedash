@@ -1075,7 +1075,10 @@ function renderGrouped(container, sessions, renderFn) {
   });
 
   var globalIdx = 0;
-  var html = '';
+  var html = '<div style="display:flex;gap:8px;margin-bottom:12px">';
+  html += '<button class="toolbar-btn" onclick="document.querySelectorAll(\'.group\').forEach(function(g){g.classList.add(\'collapsed\')})">Collapse All</button>';
+  html += '<button class="toolbar-btn" onclick="document.querySelectorAll(\'.group\').forEach(function(g){g.classList.remove(\'collapsed\')})">Expand All</button>';
+  html += '</div>';
   sortedKeys.forEach(function(key) {
     var group = groups[key];
     var color = getProjectColor(key);
@@ -1167,7 +1170,11 @@ function renderProjects(container, sessions) {
   }
 
   var globalIdx = 0;
-  var html = '<div class="git-projects">';
+  var html = '<div style="display:flex;gap:8px;margin-bottom:12px">';
+  html += '<button class="toolbar-btn" onclick="document.querySelectorAll(\'.git-project-group\').forEach(function(g){g.classList.add(\'collapsed\')})">Collapse All</button>';
+  html += '<button class="toolbar-btn" onclick="document.querySelectorAll(\'.git-project-group\').forEach(function(g){g.classList.remove(\'collapsed\')})">Expand All</button>';
+  html += '</div>';
+  html += '<div class="git-projects">';
   sorted.forEach(function(entry) {
     var name = entry[0];
     var list = entry[1].slice().sort(function(a, b) { return b.last_ts - a.last_ts; });
