@@ -91,9 +91,16 @@ function getSessionGroupInfo(session) {
   return { key: name, name: name };
 }
 
+function stripRecapSuffix(s) {
+  return (s || '').replace(/\s*\(disable recaps in \/config\)\s*$/, '');
+}
+
 function getSessionDisplayName(session) {
   if (!session) return '';
-  return session.session_name || session.first_message || '';
+  return session.session_name
+    || stripRecapSuffix(session.recap)
+    || session.first_message
+    || '';
 }
 
 // ── Utilities ──────────────────────────────────────────────────
@@ -601,6 +608,7 @@ function searchScore(query, session) {
   var q = query.toLowerCase();
   var fields = [
     session.session_name || '',
+    session.recap || '',
     session.first_message || '',
     session.project_short || '',
     session.project || '',
@@ -952,6 +960,17 @@ function render() {
   var stats = document.getElementById('stats');
   if (!content) return;
 
+  // Preserve scroll + collapsed state across re-renders
+  var scrollTop = content.scrollTop;
+  var collapsedGroups = new Set();
+  content.querySelectorAll('.group.collapsed, .git-project-group.collapsed').forEach(function(g) {
+    var header = g.querySelector('.group-header, .git-project-header');
+    if (header) {
+      var name = header.querySelector('.group-name, .git-project-name');
+      if (name) collapsedGroups.add(name.textContent.trim());
+    }
+  });
+
   var sessions = filteredSessions;
 
   // Stats
@@ -1040,6 +1059,20 @@ function render() {
   if (hasMore) {
     content.innerHTML += '<div style="text-align:center;padding:20px"><button class="toolbar-btn" onclick="loadMoreCards()" style="padding:8px 24px">Load more (' + (sessions.length - renderLimit) + ' remaining)</button></div>';
   }
+
+  // Restore scroll + collapsed state
+  if (collapsedGroups.size > 0) {
+    content.querySelectorAll('.group, .git-project-group').forEach(function(g) {
+      var header = g.querySelector('.group-header, .git-project-header');
+      if (header) {
+        var name = header.querySelector('.group-name, .git-project-name');
+        if (name && collapsedGroups.has(name.textContent.trim())) {
+          g.classList.add('collapsed');
+        }
+      }
+    });
+  }
+  if (scrollTop) content.scrollTop = scrollTop;
 }
 
 function loadMoreCards() {
@@ -1061,7 +1094,10 @@ function renderGrouped(container, sessions, renderFn) {
   });
 
   var globalIdx = 0;
-  var html = '';
+  var html = '<div style="display:flex;gap:8px;margin-bottom:12px">';
+  html += '<button class="toolbar-btn" onclick="document.querySelectorAll(\'.group\').forEach(function(g){g.classList.add(\'collapsed\')})">Collapse All</button>';
+  html += '<button class="toolbar-btn" onclick="document.querySelectorAll(\'.group\').forEach(function(g){g.classList.remove(\'collapsed\')})">Expand All</button>';
+  html += '</div>';
   sortedKeys.forEach(function(key) {
     var group = groups[key];
     var color = getProjectColor(key);
@@ -1153,7 +1189,11 @@ function renderProjects(container, sessions) {
   }
 
   var globalIdx = 0;
-  var html = '<div class="git-projects">';
+  var html = '<div style="display:flex;gap:8px;margin-bottom:12px">';
+  html += '<button class="toolbar-btn" onclick="document.querySelectorAll(\'.git-project-group\').forEach(function(g){g.classList.add(\'collapsed\')})">Collapse All</button>';
+  html += '<button class="toolbar-btn" onclick="document.querySelectorAll(\'.git-project-group\').forEach(function(g){g.classList.remove(\'collapsed\')})">Expand All</button>';
+  html += '</div>';
+  html += '<div class="git-projects">';
   sorted.forEach(function(entry) {
     var name = entry[0];
     var list = entry[1].slice().sort(function(a, b) { return b.last_ts - a.last_ts; });
@@ -1220,6 +1260,7 @@ async function confirmDelete() {
         var remaining = allSessions.filter(function(s) {
           return (s.project || '').toLowerCase().indexOf(searchQuery.toLowerCase()) >= 0 ||
                  (s.session_name || '').toLowerCase().indexOf(searchQuery.toLowerCase()) >= 0 ||
+                 (s.recap || '').toLowerCase().indexOf(searchQuery.toLowerCase()) >= 0 ||
                  (s.first_message || '').toLowerCase().indexOf(searchQuery.toLowerCase()) >= 0;
         });
         if (remaining.length === 0) {
@@ -1266,9 +1307,32 @@ function updateBulkBar() {
   if (selectedIds.size > 0) {
     bar.style.display = 'flex';
     document.getElementById('bulkCount').textContent = selectedIds.size + ' selected';
+
+    // Warn if some selected sessions are hidden by the current filter
+    var visibleIds = new Set((filteredSessions || []).map(function(s) { return s.id; }));
+    var hiddenCount = 0;
+    selectedIds.forEach(function(id) { if (!visibleIds.has(id)) hiddenCount++; });
+    var warning = document.getElementById('bulkHiddenWarning');
+    var deleteBtn = document.getElementById('bulkDeleteBtn');
+    if (hiddenCount > 0) {
+      document.getElementById('bulkHiddenCount').textContent = hiddenCount;
+      if (warning) warning.style.display = 'inline';
+      if (deleteBtn) { deleteBtn.disabled = true; deleteBtn.title = 'Clear or deselect hidden sessions first'; }
+    } else {
+      if (warning) warning.style.display = 'none';
+      if (deleteBtn) { deleteBtn.disabled = false; deleteBtn.title = ''; }
+    }
   } else {
     bar.style.display = 'none';
   }
+}
+
+function clearHiddenSelections(event) {
+  if (event) event.preventDefault();
+  var visibleIds = new Set((filteredSessions || []).map(function(s) { return s.id; }));
+  selectedIds.forEach(function(id) { if (!visibleIds.has(id)) selectedIds.delete(id); });
+  updateBulkBar();
+  render();
 }
 
 function clearSelection() {
@@ -1658,6 +1722,19 @@ function renderSettings(container) {
   html += '<p style="font-size:12px;color:var(--text-muted);margin:10px 0 0">Applies to grouped session views like All Sessions and Claude Code. Projects always stay repository-based.</p>';
   html += '</div>';
 
+  // Message Sort Order
+  var savedMsgSort = localStorage.getItem('codedash-msg-sort') || 'asc';
+  html += '<div class="settings-group">';
+  html += '<label class="settings-label">Message Sort Order</label>';
+  html += '<p style="font-size:12px;color:var(--text-muted);margin:0 0 8px">Default order for messages in session drawer</p>';
+  html += '<div class="settings-theme-btns">';
+  [['asc', '&#8593; Oldest first'], ['desc', '&#8595; Newest first']].forEach(function(pair) {
+    var active = savedMsgSort === pair[0] ? ' active' : '';
+    html += '<button class="theme-btn' + active + '" onclick="localStorage.setItem(\'codedash-msg-sort\',\'' + pair[0] + '\');renderSettings(document.getElementById(\'content\'))">' + pair[1] + '</button>';
+  });
+  html += '</div>';
+  html += '</div>';
+
   // LLM Configuration
   html += '<div class="settings-group">';
   html += '<label class="settings-label">LLM Configuration</label>';
@@ -1861,25 +1938,33 @@ async function checkForUpdates() {
       if (badge) {
         badge.textContent = 'v' + data.current + ' → v' + data.latest;
         badge.classList.add('update-available');
-        badge.title = 'Click to copy update command';
-        badge.onclick = function() {
-          copyText('npm i -g codbash-app@latest', 'Copied: npm i -g codbash-app@latest');
-        };
+        badge.title = 'Click to update';
+        badge.onclick = function() { selfUpdate(); };
       }
       var banner = document.getElementById('updateBanner');
       var text = document.getElementById('updateText');
       if (banner && text) {
-        text.textContent = 'v' + data.latest + ' available — run: npm i -g codbash-app@latest';
+        text.innerHTML = '<strong>v' + data.latest + '</strong> available';
         banner.style.display = 'flex';
-        banner.dataset.cmd = 'npm i -g codbash-app@latest';
       }
     }
   } catch {}
 }
 
+async function selfUpdate() {
+  if (!confirm('Update codbash to latest version? The page will reload.')) return;
+  showToast('Updating...');
+  try {
+    await fetch('/api/update', { method: 'POST' });
+    showToast('Updated! Reloading in 5s...');
+    setTimeout(function() { location.reload(); }, 5000);
+  } catch (e) {
+    showToast('Update failed: ' + e.message);
+  }
+}
+
 function copyUpdate() {
-  var cmd = 'codbash update && codbash restart';
-  copyText(cmd, 'Copied: ' + cmd + '  (run in terminal)');
+  copyText('npm i -g codbash-app@latest && codbash restart', 'Copied update command');
 }
 
 function dismissUpdate() {
@@ -1894,6 +1979,7 @@ function dismissUpdate() {
   loadSessions();
   loadTerminals();
   checkForUpdates();
+  setInterval(checkForUpdates, 10000); // check every 10s
   startActivePolling();
 
   // Apply saved theme

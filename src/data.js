@@ -166,8 +166,37 @@ const CURSOR_WORKSPACE_STORAGE = path.join(CURSOR_APP_DATA, 'User', 'workspaceSt
 const HISTORY_FILE = path.join(CLAUDE_DIR, 'history.jsonl');
 const PROJECTS_DIR = path.join(CLAUDE_DIR, 'projects');
 
+// Scan Claude desktop app's local-agent-mode-sessions for embedded .claude dirs
+// Structure: ~/Library/Application Support/Claude/local-agent-mode-sessions/<id>/<id>/local_<id>/.claude/
+function detectLocalAgentModeClaudeDirs() {
+  const result = [];
+  if (process.platform !== 'darwin') return result;
+  const baseDir = path.join(ALL_HOMES[0], 'Library', 'Application Support', 'Claude', 'local-agent-mode-sessions');
+  if (!fs.existsSync(baseDir)) return result;
+  try {
+    for (const a of fs.readdirSync(baseDir)) {
+      const aDir = path.join(baseDir, a);
+      if (!fs.statSync(aDir).isDirectory()) continue;
+      for (const b of fs.readdirSync(aDir)) {
+        const bDir = path.join(aDir, b);
+        if (!fs.statSync(bDir).isDirectory()) continue;
+        for (const c of fs.readdirSync(bDir)) {
+          const cDir = path.join(bDir, c);
+          if (!fs.statSync(cDir).isDirectory()) continue;
+          const claudeDir = path.join(cDir, '.claude');
+          if (fs.existsSync(claudeDir)) result.push(claudeDir);
+        }
+      }
+    }
+  } catch {}
+  return result;
+}
+
 // On WSL, collect all alternative data dirs
-const EXTRA_CLAUDE_DIRS = ALL_HOMES.slice(1).map(h => path.join(h, '.claude')).filter(d => fs.existsSync(d));
+const EXTRA_CLAUDE_DIRS = [
+  ...ALL_HOMES.slice(1).map(h => path.join(h, '.claude')).filter(d => fs.existsSync(d)),
+  ...detectLocalAgentModeClaudeDirs(),
+];
 const EXTRA_CODEX_DIRS = ALL_HOMES.slice(1).map(h => path.join(h, '.codex')).filter(d => fs.existsSync(d));
 const EXTRA_CURSOR_DIRS = ALL_HOMES.slice(1).map(h => path.join(h, '.cursor')).filter(d => fs.existsSync(d));
 
@@ -252,7 +281,7 @@ function parseKiloMcpServer(toolName) {
 }
 
 // Disk cache for parsed Claude session files (keyed by path + mtime + size)
-const PARSED_CACHE_FILE = path.join(os.tmpdir(), 'codedash-parsed-cache.json');
+const PARSED_CACHE_FILE = path.join(os.tmpdir(), 'codedash-parsed-cache-v2.json');
 let _parsedDiskCache = null;
 let _parsedDiskCacheDirty = false;
 // Reverse index: file path -> cache key (avoids repeated fs.statSync)
@@ -318,6 +347,7 @@ function parseClaudeSessionFile(sessionFile) {
   let totalUserMsgs = 0;    // all user-type messages (including tool_result, sub-agents)
   let entrypointFound = false;
   let worktreeOriginalCwd = '';
+  let lastRecap = '';
   const mcpSet = new Set();
   const skillSet = new Set();
 
@@ -346,6 +376,10 @@ function parseClaudeSessionFile(sessionFile) {
       if (entry.type === 'custom-title' && typeof entry.customTitle === 'string') {
         const title = entry.customTitle.trim();
         if (title) customTitle = title.slice(0, 200);
+      }
+      if (entry.type === 'system' && entry.subtype === 'away_summary') {
+        const txt = (entry.content || '').trim();
+        if (txt) lastRecap = txt.slice(0, 300);
       }
       if (!firstMsg && entry.type === 'user' && entry.message && entry.message.content) {
         const content = extractContent(entry.message.content).trim();
@@ -383,6 +417,7 @@ function parseClaudeSessionFile(sessionFile) {
     lastTs,
     fileSize: stat.size,
     worktreeOriginalCwd,
+    lastRecap,
     mcpServers: Array.from(mcpSet),
     skills: Array.from(skillSet),
   };
@@ -417,6 +452,10 @@ function mergeClaudeSessionDetail(session, summary, sessionFile) {
 
   if (summary.customTitle) {
     session.session_name = summary.customTitle;
+  }
+
+  if (summary.lastRecap) {
+    session.recap = summary.lastRecap;
   }
 }
 
@@ -1550,6 +1589,7 @@ const SESSIONS_CACHE_TTL = 60000; // 60 seconds — hot cache, invalidated by fi
 let _historyMtime = 0;
 let _historySize = 0;
 let _projectsDirMtime = 0;
+let _projectsSubDirMtimes = {}; // { subDirPath: mtimeMs }
 
 function _sessionsNeedRescan() {
   // Check if history.jsonl or projects dir changed since last scan
@@ -1561,6 +1601,14 @@ function _sessionsNeedRescan() {
     if (fs.existsSync(PROJECTS_DIR)) {
       const st = fs.statSync(PROJECTS_DIR);
       if (st.mtimeMs !== _projectsDirMtime) return true;
+      // Also check subdirectory mtimes — new sessions in existing project dirs
+      // don't change PROJECTS_DIR mtime, only their parent subdir mtime
+      for (const entry of fs.readdirSync(PROJECTS_DIR, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        const subDir = path.join(PROJECTS_DIR, entry.name);
+        const subSt = fs.statSync(subDir);
+        if (subSt.mtimeMs !== (_projectsSubDirMtimes[subDir] || 0)) return true;
+      }
     }
   } catch {}
   return false;
@@ -1575,6 +1623,12 @@ function _updateScanMarkers() {
     }
     if (fs.existsSync(PROJECTS_DIR)) {
       _projectsDirMtime = fs.statSync(PROJECTS_DIR).mtimeMs;
+      _projectsSubDirMtimes = {};
+      for (const entry of fs.readdirSync(PROJECTS_DIR, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        const subDir = path.join(PROJECTS_DIR, entry.name);
+        try { _projectsSubDirMtimes[subDir] = fs.statSync(subDir).mtimeMs; } catch {}
+      }
     }
   } catch {}
 }
@@ -1867,6 +1921,7 @@ function loadSessions() {
               _claude_dir: extraClaudeDir,
               _session_file: fp,
               worktree_original_cwd: summary.worktreeOriginalCwd || '',
+              recap: summary.lastRecap || '',
             };
           }
         }
@@ -1940,6 +1995,7 @@ function loadSessions() {
             _claude_dir: CLAUDE_DIR,
             _session_file: filePath,
             worktree_original_cwd: summary.worktreeOriginalCwd || '',
+            recap: summary.lastRecap || '',
           };
         }
       }

@@ -3,6 +3,16 @@
 var _analyticsHtmlCache = null;
 var _analyticsCacheUrl = null;
 
+function switchAnalyticsTab(tab) {
+  document.querySelectorAll('.atab-pane').forEach(function(el) {
+    el.style.display = el.dataset.tab === tab ? 'block' : 'none';
+  });
+  document.querySelectorAll('.atab-btn').forEach(function(el) {
+    el.classList.toggle('active', el.dataset.tab === tab);
+  });
+  localStorage.setItem('codedash-analytics-tab', tab);
+}
+
 async function renderAnalytics(container) {
   // Check frontend cache first — show instantly if same filters
   var url = '/api/analytics/cost';
@@ -13,6 +23,8 @@ async function renderAnalytics(container) {
 
   if (_analyticsHtmlCache && _analyticsCacheUrl === url) {
     container.innerHTML = _analyticsHtmlCache;
+    var activeTab = localStorage.getItem('codedash-analytics-tab') || 'overview';
+    switchAnalyticsTab(activeTab);
     return;
   }
 
@@ -27,6 +39,16 @@ async function renderAnalytics(container) {
 
     var html = '<div class="analytics-container">';
     html += '<h2 class="heatmap-title">Cost Analytics</h2>';
+
+    // ── Tab bar ────────────────────────────────────────────────
+    html += '<div class="analytics-tabs">';
+    html += '<button class="atab-btn" data-tab="overview" onclick="switchAnalyticsTab(\'overview\')">Overview</button>';
+    html += '<button class="atab-btn" data-tab="breakdown" onclick="switchAnalyticsTab(\'breakdown\')">Breakdown</button>';
+    html += '<button class="atab-btn" data-tab="history" onclick="switchAnalyticsTab(\'history\')">History</button>';
+    html += '</div>';
+
+    // ══ TAB: Overview ══════════════════════════════════════════
+    html += '<div class="atab-pane" data-tab="overview">';
 
     // ── Summary cards ──────────────────────────────────────────
     html += '<div class="analytics-summary">';
@@ -82,6 +104,32 @@ async function renderAnalytics(container) {
         html += '<div class="analytics-coverage">Cost data: ' + coverageparts.join(' \u00b7 ') + '</div>';
       }
     }
+
+    // ── Cost by agent (overview) ───────────────────────────────
+    var agentEntriesOv = Object.entries(data.byAgent || {}).filter(function(e) { return e[1].sessions > 0; });
+    if (agentEntriesOv.length > 1) {
+      agentEntriesOv.sort(function(a, b) { return b[1].cost - a[1].cost; });
+      html += '<div class="chart-section"><h3>Cost by Agent</h3>';
+      html += '<div class="hbar-chart">';
+      var maxAgentCostOv = agentEntriesOv[0][1].cost || 1;
+      agentEntriesOv.forEach(function(entry) {
+        var name = entry[0]; var info = entry[1];
+        var pct = maxAgentCostOv > 0 ? (info.cost / maxAgentCostOv * 100) : 0;
+        var label = { 'claude': 'Claude Code', 'claude-ext': 'Claude Ext', 'codex': 'Codex', 'opencode': 'OpenCode', 'cursor': 'Cursor', 'kiro': 'Kiro' }[name] || name;
+        var estMark = info.estimated ? ' <span style="font-size:10px;opacity:0.6">~est.</span>' : '';
+        html += '<div class="hbar-row">';
+        html += '<span class="hbar-name">' + label + estMark + '</span>';
+        html += '<div class="hbar-track"><div class="hbar-fill" style="width:' + pct + '%"></div></div>';
+        html += '<span class="hbar-val">$' + info.cost.toFixed(2) + ' <span style="font-size:10px;opacity:0.6">(' + info.sessions + ' sess.)</span></span>';
+        html += '</div>';
+      });
+      html += '</div></div>';
+    }
+
+    html += '</div>'; // end atab-pane overview
+
+    // ══ TAB: Breakdown ═════════════════════════════════════════
+    html += '<div class="atab-pane" data-tab="breakdown">';
 
     // ── Token breakdown ────────────────────────────────────────
     if (data.totalInputTokens !== undefined) {
@@ -141,8 +189,13 @@ async function renderAnalytics(container) {
         html += '</div>';
       }
 
-      html += '</div>';
+      html += '</div>'; // chart-section
     }
+
+    html += '</div>'; // end atab-pane breakdown
+
+    // ══ TAB: History ═══════════════════════════════════════════
+    html += '<div class="atab-pane" data-tab="history">';
 
     // ── Subscription vs API ────────────────────────────────────
     var sub = getSubscriptionConfig();
@@ -255,31 +308,15 @@ async function renderAnalytics(container) {
       html += '</div></div>';
     }
 
-    // ── Cost by agent ──────────────────────────────────────────
-    var agentEntries = Object.entries(data.byAgent || {}).filter(function(e) { return e[1].sessions > 0; });
-    if (agentEntries.length > 1) {
-      agentEntries.sort(function(a, b) { return b[1].cost - a[1].cost; });
-      html += '<div class="chart-section"><h3>Cost by Agent</h3>';
-      html += '<div class="hbar-chart">';
-      var maxAgentCost = agentEntries[0][1].cost || 1;
-      agentEntries.forEach(function(entry) {
-        var name = entry[0]; var info = entry[1];
-        var pct = maxAgentCost > 0 ? (info.cost / maxAgentCost * 100) : 0;
-        var label = { 'claude': 'Claude Code', 'claude-ext': 'Claude Ext', 'codex': 'Codex', 'opencode': 'OpenCode', 'cursor': 'Cursor', 'kiro': 'Kiro', 'kilo': 'Kilo CLI' }[name] || name;
-        var estMark = info.estimated ? ' <span style="font-size:10px;opacity:0.6">~est.</span>' : '';
-        html += '<div class="hbar-row">';
-        html += '<span class="hbar-name">' + label + estMark + '</span>';
-        html += '<div class="hbar-track"><div class="hbar-fill" style="width:' + pct + '%"></div></div>';
-        html += '<span class="hbar-val">$' + info.cost.toFixed(2) + ' <span style="font-size:10px;opacity:0.6">(' + info.sessions + ' sess.)</span></span>';
-        html += '</div>';
-      });
-      html += '</div></div>';
-    }
-
-    html += '</div>';
+    html += '</div>'; // end atab-pane history
+    html += '</div>'; // analytics-container
     container.innerHTML = html;
     _analyticsHtmlCache = html;
     _analyticsCacheUrl = url;
+
+    // Activate the stored (or default) tab
+    var activeTab = localStorage.getItem('codedash-analytics-tab') || 'overview';
+    switchAnalyticsTab(activeTab);
   } catch (e) {
     container.innerHTML = '<div class="empty-state">Failed to load analytics.</div>';
   }

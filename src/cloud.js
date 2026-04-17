@@ -266,11 +266,16 @@ async function ensureAuth() {
 }
 
 async function ensureEncryptionKey(user) {
+  const profile = loadProfile();
+  if (!profile || !profile.token) throw new Error('GitHub not connected');
+
+  // Use GitHub token as passphrase — no manual input needed
+  // Same token on both devices (user logs in with same GitHub account)
+  const passphrase = profile.token;
+
   let keyData = loadCloudKey();
 
   if (keyData && keyData.salt) {
-    // Prompt for passphrase (read from stdin)
-    const passphrase = await promptPassphrase('Enter cloud passphrase: ');
     const salt = Buffer.from(keyData.salt, 'hex');
     const key = deriveKey(passphrase, salt);
 
@@ -280,33 +285,23 @@ async function ensureEncryptionKey(user) {
       if (dec.toString() === 'codedash-verify') return key;
     } catch {}
 
-    console.error('  Wrong passphrase.\n');
-    process.exit(1);
+    // Token changed (re-auth) — re-derive with existing salt
+    const newKey = deriveKey(passphrase, salt);
+    const verifier = encrypt(Buffer.from('codedash-verify'), newKey);
+    saveCloudKey({ salt: salt.toString('hex'), verifier: verifier.toString('hex') });
+    return newKey;
   }
 
-  // First time setup
-  console.log('\n  Cloud Encryption Setup');
-  console.log('  Choose a passphrase to encrypt your sessions.');
-  console.log('  You will need this same passphrase on other devices.\n');
-
-  const passphrase = await promptPassphrase('Create cloud passphrase: ');
-  if (passphrase.length < 4) {
-    console.error('  Passphrase too short (min 4 chars).\n');
-    process.exit(1);
-  }
-
+  // First time — auto setup with GitHub token
   const salt = crypto.randomBytes(16);
   const key = deriveKey(passphrase, salt);
   const verifier = encrypt(Buffer.from('codedash-verify'), key);
 
-  // Save locally
   saveCloudKey({ salt: salt.toString('hex'), verifier: verifier.toString('hex') });
 
   // Sync salt to server
-  const profile = loadProfile();
   await cloudRequest('PUT', '/api/auth/salt', profile.token, JSON.stringify({ salt: salt.toString('hex') }));
 
-  console.log('  Encryption configured.\n');
   return key;
 }
 

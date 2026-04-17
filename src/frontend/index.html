@@ -173,7 +173,8 @@
 
 <div class="bulk-bar" id="bulkBar" style="display:none">
     <span id="bulkCount">0 selected</span>
-    <button class="launch-btn btn-delete" onclick="bulkDelete()">Delete Selected</button>
+    <span id="bulkHiddenWarning" class="bulk-hidden-warning" style="display:none">⚠ <span id="bulkHiddenCount"></span> hidden by filter — <a href="#" onclick="clearHiddenSelections(event)">deselect hidden</a></span>
+    <button class="launch-btn btn-delete" id="bulkDeleteBtn" onclick="bulkDelete()">Delete Selected</button>
     <button class="launch-btn btn-secondary" onclick="clearSelection()">Cancel</button>
 </div>
 
@@ -181,7 +182,8 @@
 
 <div class="update-banner" id="updateBanner" style="display:none">
     <span id="updateText"></span>
-    <button class="update-btn" onclick="copyUpdate()">Copy update command</button>
+    <button class="update-btn" onclick="selfUpdate()" style="font-weight:700">Update Now</button>
+    <button class="update-btn" onclick="copyUpdate()" style="opacity:0.7">Copy Command</button>
     <button class="update-dismiss" onclick="dismissUpdate()">&times;</button>
 </div>
 
