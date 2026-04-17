@@ -424,6 +424,30 @@ function startServer(host, port, openBrowser = true) {
       });
     }
 
+    // ── Self-update ─────────────────────────
+    else if (req.method === 'POST' && pathname === '/api/update') {
+      const pkg = require('../package.json');
+      log('UPDATE', `Starting self-update from v${pkg.version}...`);
+      json(res, { ok: true, message: 'Updating... Page will reload.' });
+      // Run update in background after response is sent
+      setTimeout(() => {
+        const { execSync } = require('child_process');
+        try {
+          execSync('npm i -g codbash-app@latest', { stdio: 'inherit', timeout: 60000 });
+          log('UPDATE', 'Updated. Restarting...');
+          // Restart the process
+          process.on('exit', () => {
+            require('child_process').spawn(process.argv[0], process.argv.slice(1), {
+              detached: true, stdio: 'inherit'
+            }).unref();
+          });
+          process.exit(0);
+        } catch (e) {
+          log('ERROR', `Update failed: ${e.message}`);
+        }
+      }, 500);
+    }
+
     // ── 404 ─────────────────────────────────
     else {
       res.writeHead(404);

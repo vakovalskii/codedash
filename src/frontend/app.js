@@ -1938,25 +1938,33 @@ async function checkForUpdates() {
       if (badge) {
         badge.textContent = 'v' + data.current + ' → v' + data.latest;
         badge.classList.add('update-available');
-        badge.title = 'Click to copy update command';
-        badge.onclick = function() {
-          copyText('npm i -g codbash-app@latest', 'Copied: npm i -g codbash-app@latest');
-        };
+        badge.title = 'Click to update';
+        badge.onclick = function() { selfUpdate(); };
       }
       var banner = document.getElementById('updateBanner');
       var text = document.getElementById('updateText');
       if (banner && text) {
-        text.textContent = 'v' + data.latest + ' available — run: npm i -g codbash-app@latest';
+        text.innerHTML = '<strong>v' + data.latest + '</strong> available';
         banner.style.display = 'flex';
-        banner.dataset.cmd = 'npm i -g codbash-app@latest';
       }
     }
   } catch {}
 }
 
+async function selfUpdate() {
+  if (!confirm('Update codbash to latest version? The page will reload.')) return;
+  showToast('Updating...');
+  try {
+    await fetch('/api/update', { method: 'POST' });
+    showToast('Updated! Reloading in 5s...');
+    setTimeout(function() { location.reload(); }, 5000);
+  } catch (e) {
+    showToast('Update failed: ' + e.message);
+  }
+}
+
 function copyUpdate() {
-  var cmd = 'codbash update && codbash restart';
-  copyText(cmd, 'Copied: ' + cmd + '  (run in terminal)');
+  copyText('npm i -g codbash-app@latest && codbash restart', 'Copied update command');
 }
 
 function dismissUpdate() {
@@ -1971,6 +1979,7 @@ function dismissUpdate() {
   loadSessions();
   loadTerminals();
   checkForUpdates();
+  setInterval(checkForUpdates, 10000); // check every 10s
   startActivePolling();
 
   // Apply saved theme
