@@ -1,6 +1,6 @@
 # Codbash
 
-Dashboard + CLI for AI coding agent sessions. View, search, resume, convert, and hand off between 5 agents.
+Dashboard + CLI for AI coding agent sessions. View, search, resume, convert, and hand off between 7 agents.
 
 [Russian / Русский](docs/README_RU.md) | [Chinese / 中文](docs/README_ZH.md)
 
@@ -24,6 +24,7 @@ codedash run
 | Cursor | JSONL | Yes | Yes | Yes | - | Yes | Open in Cursor |
 | OpenCode | SQLite | Yes | Yes | Yes | - | Yes | Terminal |
 | Kiro CLI | SQLite | Yes | Yes | Yes | - | Yes | Terminal |
+| Copilot Chat | JSON/JSONL | Yes | Yes | - | - | Yes | - |
 
 Also detects Claude Code running inside Cursor (via `claude-vscode` entrypoint).
 
@@ -40,7 +41,7 @@ Also detects Claude Code running inside Cursor (via `claude-vscode` entrypoint).
 - Themes: Dark, Light, System
 
 **Live Monitoring**
-- LIVE/WAITING badges on all 5 agent types
+- LIVE/WAITING badges on all agent types
 - Animated border on active session cards
 - Running view with CPU, Memory, PID, Uptime
 - Focus Terminal / Open in Cursor buttons
@@ -54,7 +55,7 @@ Also detects Claude Code running inside Cursor (via `claude-vscode` entrypoint).
 **Cross-Agent**
 - Convert sessions between Claude Code and Codex
 - Handoff: generate context document to continue in any agent
-- Install Agents: one-click install commands for all 5 agents
+- Install Agents: one-click install commands for all agents
 
 **CLI**
 ```bash
@@ -82,6 +83,7 @@ codedash stop
 ~/.cursor/projects/*/agent-transcripts/ Cursor agent sessions
 ~/.local/share/opencode/opencode.db     OpenCode (SQLite)
 ~/Library/Application Support/kiro-cli/ Kiro CLI (SQLite)
+~/.config/Code/User/workspaceStorage/   Copilot Chat (JSON/JSONL)
 ```
 
 Zero dependencies. Everything runs on `localhost`.

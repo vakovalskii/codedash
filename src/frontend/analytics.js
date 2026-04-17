@@ -115,7 +115,7 @@ async function renderAnalytics(container) {
       agentEntriesOv.forEach(function(entry) {
         var name = entry[0]; var info = entry[1];
         var pct = maxAgentCostOv > 0 ? (info.cost / maxAgentCostOv * 100) : 0;
-        var label = { 'claude': 'Claude Code', 'claude-ext': 'Claude Ext', 'codex': 'Codex', 'opencode': 'OpenCode', 'cursor': 'Cursor', 'kiro': 'Kiro' }[name] || name;
+        var label = { 'claude': 'Claude Code', 'claude-ext': 'Claude Ext', 'codex': 'Codex', 'opencode': 'OpenCode', 'cursor': 'Cursor', 'kiro': 'Kiro', 'kilo': 'Kilo CLI', 'copilot-chat': 'Copilot Chat' }[name] || name;
         var estMark = info.estimated ? ' <span style="font-size:10px;opacity:0.6">~est.</span>' : '';
         html += '<div class="hbar-row">';
         html += '<span class="hbar-name">' + label + estMark + '</span>';

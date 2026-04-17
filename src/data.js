@@ -163,6 +163,13 @@ const CURSOR_APP_DATA = process.platform === 'darwin'
     : path.join(ALL_HOMES[0], '.config', 'Cursor');
 const CURSOR_GLOBAL_DB = path.join(CURSOR_APP_DATA, 'User', 'globalStorage', 'state.vscdb');
 const CURSOR_WORKSPACE_STORAGE = path.join(CURSOR_APP_DATA, 'User', 'workspaceStorage');
+// VS Code storage for Copilot Chat sessions (same path structure as Cursor but for Code)
+const VSCODE_APP_DATA = process.platform === 'darwin'
+  ? path.join(ALL_HOMES[0], 'Library', 'Application Support', 'Code')
+  : process.platform === 'win32'
+    ? path.join(ALL_HOMES[0], 'AppData', 'Roaming', 'Code')
+    : path.join(ALL_HOMES[0], '.config', 'Code');
+const VSCODE_WORKSPACE_STORAGE = path.join(VSCODE_APP_DATA, 'User', 'workspaceStorage');
 const HISTORY_FILE = path.join(CLAUDE_DIR, 'history.jsonl');
 const PROJECTS_DIR = path.join(CLAUDE_DIR, 'projects');
 
@@ -935,6 +942,357 @@ function loadKiroDetail(conversationId) {
         const resp = entry.assistant.Response || entry.assistant.response || {};
         const text = resp.content || '';
         if (text) messages.push({ role: 'assistant', content: text.slice(0, 2000), uuid: resp.message_id || '' });
+      }
+    }
+
+    return { messages: messages.slice(0, 200) };
+  } catch {
+    return { messages: [] };
+  }
+}
+
+// ── Copilot Chat (VS Code extension) ─────────────────────────
+
+// Build workspace-hash -> project path mapping for VS Code workspaceStorage
+let _copilotWsMapCache = null;
+const COPILOT_WS_MAP_CACHE_FILE = path.join(os.tmpdir(), 'codedash-copilot-ws-map.json');
+const COPILOT_WS_MAP_TTL = 600000; // 10 minutes
+
+function buildCopilotWorkspaceMap() {
+  if (_copilotWsMapCache) return _copilotWsMapCache;
+
+  // Try disk cache first
+  try {
+    if (fs.existsSync(COPILOT_WS_MAP_CACHE_FILE)) {
+      const cached = JSON.parse(fs.readFileSync(COPILOT_WS_MAP_CACHE_FILE, 'utf8'));
+      if (cached._ts && (Date.now() - cached._ts) < COPILOT_WS_MAP_TTL) {
+        delete cached._ts;
+        _copilotWsMapCache = cached;
+        return cached;
+      }
+    }
+  } catch {}
+
+  const map = {}; // hash -> { folder, chatDir }
+  if (!fs.existsSync(VSCODE_WORKSPACE_STORAGE)) return map;
+
+  try {
+    for (const hash of fs.readdirSync(VSCODE_WORKSPACE_STORAGE)) {
+      const chatDir = path.join(VSCODE_WORKSPACE_STORAGE, hash, 'chatSessions');
+      if (!fs.existsSync(chatDir)) continue;
+
+      // Read workspace.json for project path
+      let folder = '';
+      try {
+        const wsJson = path.join(VSCODE_WORKSPACE_STORAGE, hash, 'workspace.json');
+        const wsData = JSON.parse(fs.readFileSync(wsJson, 'utf8'));
+        folder = wsData.folder || '';
+        if (folder.startsWith('file://')) {
+          folder = decodeURIComponent(folder.replace('file://', ''));
+          // Windows: /D:/path -> D:/path
+          if (process.platform === 'win32' && /^\/[a-zA-Z]:/.test(folder)) {
+            folder = folder.slice(1);
+          }
+        } else if (folder.startsWith('vscode-remote://')) {
+          const m = folder.match(/vscode-remote:\/\/[^/]+(\/.*)/);
+          folder = m ? decodeURIComponent(m[1]) : '';
+        }
+      } catch {}
+
+      map[hash] = { folder, chatDir };
+    }
+  } catch {}
+
+  _copilotWsMapCache = map;
+
+  try {
+    const toSave = {};
+    for (const k of Object.keys(map)) toSave[k] = map[k];
+    toSave._ts = Date.now();
+    fs.writeFileSync(COPILOT_WS_MAP_CACHE_FILE, JSON.stringify(toSave));
+  } catch {}
+
+  return map;
+}
+
+// Extract text from a Copilot response array (mix of text, thinking, tool invocations)
+function extractCopilotResponseText(response) {
+  if (!Array.isArray(response)) return '';
+  const parts = [];
+  for (const item of response) {
+    // Text responses: kind is absent, 'text', or 'markdownContent'
+    if ((!item.kind || item.kind === 'text' || item.kind === 'markdownContent') && typeof item.value === 'string') {
+      parts.push(item.value);
+    }
+  }
+  return parts.join('').trim();
+}
+
+// Parse a Copilot JSON session file — returns { requests, creationDate, sessionId }
+// Note: large files (30+ MB) are slow because of embedded image attachments in variableData.
+// JSON.parse is unavoidable here, but Node handles it in ~1-2s for typical files.
+function parseCopilotJson(filePath) {
+  const raw = fs.readFileSync(filePath, 'utf8');
+  return JSON.parse(raw);
+}
+
+// Disk cache for Copilot session metadata (avoids re-scanning large files)
+const COPILOT_PARSED_CACHE_FILE = path.join(os.tmpdir(), 'codedash-copilot-parsed-cache.json');
+let _copilotParsedCache = null;
+
+function _loadCopilotParsedCache() {
+  if (_copilotParsedCache) return;
+  try {
+    if (fs.existsSync(COPILOT_PARSED_CACHE_FILE)) {
+      _copilotParsedCache = JSON.parse(fs.readFileSync(COPILOT_PARSED_CACHE_FILE, 'utf8'));
+    } else {
+      _copilotParsedCache = {};
+    }
+  } catch { _copilotParsedCache = {}; }
+}
+
+function _saveCopilotParsedCache() {
+  try { fs.writeFileSync(COPILOT_PARSED_CACHE_FILE, JSON.stringify(_copilotParsedCache)); } catch {}
+}
+
+// Scan metadata for a Copilot JSON file. Uses disk cache keyed by path|mtime|size.
+function scanCopilotJsonMetadata(filePath, stat) {
+  _loadCopilotParsedCache();
+  const cacheKey = filePath + '|' + stat.mtimeMs + '|' + stat.size;
+  if (_copilotParsedCache[cacheKey]) return _copilotParsedCache[cacheKey];
+
+  let result;
+  if (stat.size < 1048576) {
+    // Small file (<1MB): full parse is fast
+    const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    const reqs = data.requests || [];
+    result = {
+      creationDate: data.creationDate || 0,
+      msgCount: reqs.length,
+      firstMsg: (reqs[0] && reqs[0].message && reqs[0].message.text || '').slice(0, 200),
+    };
+  } else {
+    // Large file: peek first 4KB for metadata, estimate msg count
+    const fd = fs.openSync(filePath, 'r');
+    const peekBuf = Buffer.alloc(Math.min(4096, stat.size));
+    fs.readSync(fd, peekBuf, 0, peekBuf.length, 0);
+    fs.closeSync(fd);
+    const peek = peekBuf.toString('utf8');
+    let creationDate = 0;
+    const cdMatch = peek.match(/"creationDate"\s*:\s*(\d+)/);
+    if (cdMatch) creationDate = parseInt(cdMatch[1]);
+    let firstMsg = '';
+    const fmMatch = peek.match(/"text"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+    if (fmMatch) try { firstMsg = JSON.parse('"' + fmMatch[1] + '"').slice(0, 200); } catch {}
+    // For large files, estimate message count (actual count loaded on detail view)
+    // Average Copilot request is ~200KB-2MB with attachments
+    result = { creationDate, msgCount: Math.max(1, Math.round(stat.size / 500000)), firstMsg };
+  }
+
+  _copilotParsedCache[cacheKey] = result;
+  return result;
+}
+
+// Scan metadata for a Copilot JSONL file. Uses disk cache.
+function scanCopilotJsonlMetadata(filePath, stat) {
+  _loadCopilotParsedCache();
+  const cacheKey = filePath + '|' + stat.mtimeMs + '|' + stat.size;
+  if (_copilotParsedCache[cacheKey]) return _copilotParsedCache[cacheKey];
+
+  let creationDate = 0, msgCount = 0, firstMsg = '';
+  const lines = readLines(filePath);
+  for (const line of lines) {
+    if (line.startsWith('{"kind":0')) {
+      const cdMatch = line.match(/"creationDate"\s*:\s*(\d+)/);
+      if (cdMatch) creationDate = parseInt(cdMatch[1]);
+      continue;
+    }
+    if (!_isCopilotLineRelevant(line)) continue;
+    let entry;
+    try { entry = JSON.parse(line); } catch { continue; }
+    if (entry.kind === 2 && Array.isArray(entry.k) && entry.k.length === 1 && entry.k[0] === 'requests' && Array.isArray(entry.v)) {
+      for (const req of entry.v) {
+        msgCount++;
+        if (!firstMsg && req.message && req.message.text) {
+          firstMsg = req.message.text.slice(0, 200);
+        }
+      }
+    }
+  }
+
+  const result = { creationDate, msgCount, firstMsg };
+  _copilotParsedCache[cacheKey] = result;
+  return result;
+}
+
+// Quick string check: does this JSONL line contain data we need?
+// Skip kind:1 mutations (inputState, modelState, hasPendingEdits, responderUsername, etc.)
+// and kind:2 splices to non-request paths — these often contain huge image byte arrays.
+function _isCopilotLineRelevant(line) {
+  // kind:0 (init) — always relevant
+  if (line.startsWith('{"kind":0')) return true;
+  // kind:2 with "requests" in path — relevant
+  if (line.startsWith('{"kind":2') && line.includes('"requests"')) return true;
+  // Everything else (kind:1, kind:2 without requests) — skip
+  return false;
+}
+
+// Parse a Copilot JSONL mutation file — targeted extraction of requests & responses
+// Performance: skips irrelevant lines (inputState, attachments with image byte arrays)
+// BEFORE calling JSON.parse, avoiding parsing multi-MB attachment lines.
+function parseCopilotJsonl(filePath) {
+  const lines = readLines(filePath);
+  let base = { requests: [] };
+  const extraResponses = {}; // requestIndex -> [response items...]
+
+  for (const line of lines) {
+    if (!_isCopilotLineRelevant(line)) continue;
+
+    let entry;
+    try { entry = JSON.parse(line); } catch { continue; }
+
+    if (entry.kind === 0) {
+      // Initial state — extract only what we need, discard attachments
+      const v = entry.v || {};
+      base = { requests: v.requests || [], creationDate: v.creationDate, sessionId: v.sessionId };
+    } else if (entry.kind === 2) {
+      const k = entry.k || [];
+      if (k.length === 1 && k[0] === 'requests' && Array.isArray(entry.v)) {
+        // Splice new requests into requests array
+        for (const req of entry.v) {
+          base.requests.push(req);
+        }
+      } else if (k.length === 3 && k[0] === 'requests' && k[2] === 'response' && Array.isArray(entry.v)) {
+        // Append response items to a specific request
+        const idx = parseInt(k[1]);
+        if (!isNaN(idx)) {
+          if (!extraResponses[idx]) extraResponses[idx] = [];
+          for (const item of entry.v) extraResponses[idx].push(item);
+        }
+      }
+    }
+  }
+
+  // Merge extra responses into requests
+  for (const idx of Object.keys(extraResponses)) {
+    const i = parseInt(idx);
+    if (base.requests[i]) {
+      if (!base.requests[i].response) base.requests[i].response = [];
+      for (const item of extraResponses[idx]) {
+        base.requests[i].response.push(item);
+      }
+    }
+  }
+
+  return base;
+}
+
+function scanCopilotSessions() {
+  const sessions = [];
+  if (!fs.existsSync(VSCODE_WORKSPACE_STORAGE)) return sessions;
+
+  const wsMap = buildCopilotWorkspaceMap();
+
+  for (const hash of Object.keys(wsMap)) {
+    const { folder, chatDir } = wsMap[hash];
+    let files;
+    try { files = fs.readdirSync(chatDir); } catch { continue; }
+
+    for (const file of files) {
+      if (!file.endsWith('.json') && !file.endsWith('.jsonl')) continue;
+      const filePath = path.join(chatDir, file);
+      let stat;
+      try { stat = fs.statSync(filePath); } catch { continue; }
+      if (stat.size < 10) continue; // skip empty files
+
+      let firstMsg = '';
+      let msgCount = 0;
+      let creationDate = 0;
+
+      try {
+        const meta = file.endsWith('.json')
+          ? scanCopilotJsonMetadata(filePath, stat)
+          : scanCopilotJsonlMetadata(filePath, stat);
+        creationDate = meta.creationDate;
+        msgCount = meta.msgCount;
+        firstMsg = meta.firstMsg;
+      } catch {}
+
+      if (msgCount === 0) continue; // skip sessions with no user messages
+
+      const sessionId = 'copilot-' + file.replace(/\.(json|jsonl)$/, '');
+      sessions.push({
+        id: sessionId,
+        tool: 'copilot-chat',
+        project: folder,
+        project_short: folder.replace(os.homedir(), '~'),
+        first_ts: creationDate || stat.birthtimeMs || stat.mtimeMs,
+        last_ts: stat.mtimeMs,
+        messages: msgCount * 2, // each request has user + assistant
+        first_message: firstMsg,
+        has_detail: true,
+        file_size: stat.size,
+        detail_messages: msgCount * 2,
+        _file: filePath,
+      });
+    }
+  }
+
+  _saveCopilotParsedCache();
+  return sessions;
+}
+
+function loadCopilotDetail(sessionId) {
+  // Find file: check loaded sessions first, then scan
+  const sessions = _sessionsCache || [];
+  let filePath = null;
+  for (const s of (Array.isArray(sessions) ? sessions : Object.values(sessions))) {
+    if (s.id === sessionId && s._file) { filePath = s._file; break; }
+  }
+
+  if (!filePath) {
+    // Fallback: search workspace storage
+    const baseName = sessionId.replace(/^copilot-/, '');
+    const wsMap = buildCopilotWorkspaceMap();
+    for (const hash of Object.keys(wsMap)) {
+      const { chatDir } = wsMap[hash];
+      for (const ext of ['.json', '.jsonl']) {
+        const candidate = path.join(chatDir, baseName + ext);
+        if (fs.existsSync(candidate)) { filePath = candidate; break; }
+      }
+      if (filePath) break;
+    }
+  }
+
+  if (!filePath || !fs.existsSync(filePath)) return { messages: [] };
+
+  try {
+    let data;
+    if (filePath.endsWith('.jsonl')) {
+      data = parseCopilotJsonl(filePath);
+    } else {
+      data = parseCopilotJson(filePath);
+    }
+
+    const messages = [];
+    for (const req of (data.requests || [])) {
+      // User message
+      if (req.message && req.message.text) {
+        messages.push({
+          role: 'user',
+          content: req.message.text.slice(0, 2000),
+          uuid: req.requestId || '',
+        });
+      }
+
+      // Assistant response: concatenate text parts from response array
+      const respText = extractCopilotResponseText(req.response);
+      if (respText) {
+        messages.push({
+          role: 'assistant',
+          content: respText.slice(0, 2000),
+          uuid: req.responseId || '',
+        });
       }
     }
 
@@ -1855,6 +2213,14 @@ function loadSessions() {
     }
   } catch {}
 
+  // Load Copilot Chat sessions
+  try {
+    const copilotSessions = scanCopilotSessions();
+    for (const cs of copilotSessions) {
+      sessions[cs.id] = cs;
+    }
+  } catch {}
+
   // WSL: also load from Windows-side dirs
   for (const extraClaudeDir of EXTRA_CLAUDE_DIRS) {
     try {
@@ -2069,6 +2435,11 @@ function loadSessionDetail(sessionId, project) {
   // Kilo CLI uses SQLite
   if (found.format === 'kilo') {
     return loadKiloCliDetail(sessionId);
+  }
+
+  // Copilot Chat (JSON/JSONL)
+  if (found.format === 'copilot-chat') {
+    return loadCopilotDetail(sessionId);
   }
 
   const messages = [];
@@ -2359,6 +2730,26 @@ function _buildSessionFileIndex() {
     } catch {}
   }
 
+  // Index Copilot chat session files
+  if (fs.existsSync(VSCODE_WORKSPACE_STORAGE)) {
+    try {
+      const wsMap = buildCopilotWorkspaceMap();
+      for (const hash of Object.keys(wsMap)) {
+        const { chatDir } = wsMap[hash];
+        try {
+          for (const f of fs.readdirSync(chatDir)) {
+            if (f.endsWith('.json') || f.endsWith('.jsonl')) {
+              const sid = 'copilot-' + f.replace(/\.(json|jsonl)$/, '');
+              if (!_sessionFileIndex[sid]) {
+                _sessionFileIndex[sid] = { file: path.join(chatDir, f), format: 'copilot-chat' };
+              }
+            }
+          }
+        } catch {}
+      }
+    } catch {}
+  }
+
   _sessionFileIndexTs = now;
 }
 
@@ -2450,6 +2841,19 @@ function findSessionFile(sessionId, project) {
         return { file: KILO_DB, format: 'kilo', sessionId: sessionId };
       }
     } catch {}
+  }
+
+  // Try Copilot Chat (file-based, prefixed IDs)
+  if (sessionId.startsWith('copilot-')) {
+    const baseName = sessionId.replace(/^copilot-/, '');
+    const wsMap = buildCopilotWorkspaceMap();
+    for (const hash of Object.keys(wsMap)) {
+      const { chatDir } = wsMap[hash];
+      for (const ext of ['.json', '.jsonl']) {
+        const candidate = path.join(chatDir, baseName + ext);
+        if (fs.existsSync(candidate)) return { file: candidate, format: 'copilot-chat' };
+      }
+    }
   }
 
   return null;
@@ -2891,7 +3295,7 @@ function computeSessionCost(sessionId, project) {
   if (!found) { _costMemCache[sessionId] = EMPTY_COST; return EMPTY_COST; }
 
   // Skip formats that never have cost data
-  if (found.format === 'cursor' || found.format === 'kiro') { _costMemCache[sessionId] = EMPTY_COST; return EMPTY_COST; }
+  if (found.format === 'cursor' || found.format === 'kiro' || found.format === 'copilot-chat') { _costMemCache[sessionId] = EMPTY_COST; return EMPTY_COST; }
 
   // Check disk cache (keyed by file path + mtime + size for JSONL, sessionId for SQLite)
   _loadCostDiskCache();
@@ -3549,7 +3953,32 @@ function _saveDailyStatsDiskCache() {
 function _computeSessionDailyBreakdown(s, found) {
   const msgsByDay = {};
   const tsByDay = {};
+
+  const addMsg = (day, ts) => {
+    msgsByDay[day] = (msgsByDay[day] || 0) + 1;
+    if (!tsByDay[day]) tsByDay[day] = { first: ts, last: ts };
+    if (ts < tsByDay[day].first) tsByDay[day].first = ts;
+    if (ts > tsByDay[day].last) tsByDay[day].last = ts;
+  };
+
   try {
+    // Copilot: use optimized parser instead of line-by-line generic JSONL scan
+    if (found.format === 'copilot-chat') {
+      let data;
+      if (found.file.endsWith('.jsonl')) {
+        data = parseCopilotJsonl(found.file);
+      } else {
+        data = parseCopilotJson(found.file);
+      }
+      for (const req of (data.requests || [])) {
+        if (!req.message || !req.message.text || !req.message.text.trim()) continue;
+        const ts = req.timestamp || data.creationDate || s.first_ts;
+        const day = ts ? fmtLocalDay(ts) : (s.date || fmtLocalDay(s.last_ts));
+        addMsg(day, ts || s.first_ts);
+      }
+      return { msgsByDay, tsByDay };
+    }
+
     const lines = readLines(found.file);
     for (const line of lines) {
       try {
@@ -3584,10 +4013,7 @@ function _computeSessionDailyBreakdown(s, found) {
         if (!isUser || !hasText) continue;
         if (!ts || ts < 1000000000000) ts = s.first_ts;
         const day = (found.format === 'claude' && ts) ? fmtLocalDay(ts) : (s.date || fmtLocalDay(s.last_ts));
-        msgsByDay[day] = (msgsByDay[day] || 0) + 1;
-        if (!tsByDay[day]) tsByDay[day] = { first: ts, last: ts };
-        if (ts < tsByDay[day].first) tsByDay[day].first = ts;
-        if (ts > tsByDay[day].last) tsByDay[day].last = ts;
+        addMsg(day, ts || s.first_ts);
       } catch {}
     }
   } catch {}
