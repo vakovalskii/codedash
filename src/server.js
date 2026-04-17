@@ -611,102 +611,67 @@ async function handleCloudProxy(req, res, pathname) {
     return json(res, { error: 'Connect GitHub first' }, 401);
   }
 
-  // POST /api/cloud/setup — create passphrase (first time) or re-enter on new device
+  // POST /api/cloud/setup — auto-setup encryption using GitHub token (no passphrase)
   if (req.method === 'POST' && pathname === '/api/cloud/setup') {
-    return new Promise((resolve) => {
-      readBody(req, async (body) => {
-        try {
-          const { passphrase } = JSON.parse(body);
-          if (!passphrase || passphrase.length < 4) {
-            log('CLOUD', 'setup: passphrase too short');
-            json(res, { error: 'Passphrase too short (min 4 chars)' }, 400); return resolve();
-          }
-
-          const existing = loadCloudKey();
-          if (existing && existing.salt) {
-            log('CLOUD', 'setup: local key exists, unlocking...');
-            const result = unlockCloudKey(passphrase);
-            log('CLOUD', `setup unlock: ${result.error ? 'FAIL ' + result.error : 'OK'}`);
-            json(res, result.error ? result : { ok: true }, result.error ? 400 : 200);
-            return resolve();
-          }
-
-          // Check if server has a salt from another device
-          log('CLOUD', 'setup: checking server for existing salt...');
-          const verifyRes = await cloudApiRequest('POST', '/api/auth/verify', profile.token);
-          const serverSalt = verifyRes.status === 200 ? verifyRes.data?.user?.encryption_salt : null;
-
-          let salt;
-          if (serverSalt) {
-            log('CLOUD', 'setup: using salt from another device');
-            salt = Buffer.from(serverSalt, 'hex');
-          } else {
-            log('CLOUD', 'setup: first device, generating new salt');
-            salt = crypto.randomBytes(16);
-            await cloudApiRequest('PUT', '/api/auth/salt', profile.token, JSON.stringify({ salt: salt.toString('hex') }));
-          }
-
-          const key = deriveKey(passphrase, salt);
-          const verifier = encrypt(Buffer.from('codedash-verify'), key);
-          saveCloudKey({ salt: salt.toString('hex'), verifier: verifier.toString('hex') });
-
-          _cachedCloudKey = key;
-          log('CLOUD', `setup: OK (new=${!serverSalt})`);
-          json(res, { ok: true, isNew: !serverSalt });
-          resolve();
-        } catch (e) {
-          log('ERROR', `cloud setup: ${e.message}`);
-          json(res, { error: e.message }, 500); resolve();
+    return new Promise(async (resolve) => {
+      try {
+        if (!profile || !profile.token) {
+          json(res, { error: 'Connect GitHub first' }, 400); return resolve();
         }
-      });
+        const passphrase = profile.token;
+        const existing = loadCloudKey();
+
+        if (existing && existing.salt) {
+          // Already configured — auto-unlock
+          const salt = Buffer.from(existing.salt, 'hex');
+          _cachedCloudKey = deriveKey(passphrase, salt);
+          log('CLOUD', 'setup: auto-unlocked with GitHub token');
+          json(res, { ok: true }); return resolve();
+        }
+
+        // Check server for salt from another device
+        const verifyRes = await cloudApiRequest('POST', '/api/auth/verify', profile.token);
+        const serverSalt = verifyRes.status === 200 ? verifyRes.data?.user?.encryption_salt : null;
+
+        let salt;
+        if (serverSalt) {
+          log('CLOUD', 'setup: using salt from another device');
+          salt = Buffer.from(serverSalt, 'hex');
+        } else {
+          log('CLOUD', 'setup: first device, generating salt');
+          salt = crypto.randomBytes(16);
+          await cloudApiRequest('PUT', '/api/auth/salt', profile.token, JSON.stringify({ salt: salt.toString('hex') }));
+        }
+
+        const key = deriveKey(passphrase, salt);
+        const verifier = encrypt(Buffer.from('codedash-verify'), key);
+        saveCloudKey({ salt: salt.toString('hex'), verifier: verifier.toString('hex') });
+        _cachedCloudKey = key;
+        log('CLOUD', 'setup: OK (auto, GitHub token)');
+        json(res, { ok: true }); resolve();
+      } catch (e) {
+        log('ERROR', `cloud setup: ${e.message}`);
+        json(res, { error: e.message }, 500); resolve();
+      }
     });
   }
 
-  // POST /api/cloud/lock — clear cached key
-  if (req.method === 'POST' && pathname === '/api/cloud/lock') {
-    _cachedCloudKey = null;
-    log('CLOUD', 'locked (key cleared)');
-    json(res, { ok: true });
-    return;
-  }
-
-  // POST /api/cloud/unlock — cache encryption key from passphrase
-  if (req.method === 'POST' && pathname === '/api/cloud/unlock') {
-    return new Promise((resolve) => {
-      readBody(req, (body) => {
-        try {
-          const { passphrase } = JSON.parse(body);
-          if (!passphrase) { json(res, { error: 'passphrase required' }, 400); return resolve(); }
-          const result = unlockCloudKey(passphrase);
-          log('CLOUD', `unlock: ${result.error ? 'FAIL ' + result.error : 'OK'}`);
-          if (result.error) { json(res, result, 400); return resolve(); }
-          json(res, { ok: true });
-          resolve();
-        } catch (e) {
-          log('ERROR', `cloud unlock: ${e.message}`);
-          json(res, { error: e.message }, 500); resolve();
-        }
-      });
-    });
-  }
-
-  // GET /api/cloud/locked — check if key is cached
+  // GET /api/cloud/locked — auto-unlock if GitHub connected
   if (req.method === 'GET' && pathname === '/api/cloud/locked') {
     const keyData = loadCloudKey();
     const localConfigured = !!(keyData && keyData.salt);
 
-    // Also check if server has a salt (another device set it up)
-    let serverHasSalt = false;
-    if (!localConfigured) {
+    // Auto-unlock with GitHub token if configured
+    if (localConfigured && !_cachedCloudKey && profile && profile.token) {
       try {
-        const verifyRes = await cloudApiRequest('POST', '/api/auth/verify', profile.token);
-        serverHasSalt = !!(verifyRes.status === 200 && verifyRes.data?.user?.encryption_salt);
+        const salt = Buffer.from(keyData.salt, 'hex');
+        _cachedCloudKey = deriveKey(profile.token, salt);
+        log('CLOUD', 'auto-unlocked with GitHub token');
       } catch {}
     }
 
     json(res, {
       configured: localConfigured,
-      serverHasSalt: serverHasSalt,
       unlocked: !!_cachedCloudKey,
     });
     return;
