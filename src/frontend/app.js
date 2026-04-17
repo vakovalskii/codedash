@@ -960,8 +960,16 @@ function render() {
   var stats = document.getElementById('stats');
   if (!content) return;
 
-  // Preserve scroll position across re-renders
+  // Preserve scroll + collapsed state across re-renders
   var scrollTop = content.scrollTop;
+  var collapsedGroups = new Set();
+  content.querySelectorAll('.group.collapsed, .git-project-group.collapsed').forEach(function(g) {
+    var header = g.querySelector('.group-header, .git-project-header');
+    if (header) {
+      var name = header.querySelector('.group-name, .git-project-name');
+      if (name) collapsedGroups.add(name.textContent.trim());
+    }
+  });
 
   var sessions = filteredSessions;
 
@@ -1052,7 +1060,18 @@ function render() {
     content.innerHTML += '<div style="text-align:center;padding:20px"><button class="toolbar-btn" onclick="loadMoreCards()" style="padding:8px 24px">Load more (' + (sessions.length - renderLimit) + ' remaining)</button></div>';
   }
 
-  // Restore scroll position
+  // Restore scroll + collapsed state
+  if (collapsedGroups.size > 0) {
+    content.querySelectorAll('.group, .git-project-group').forEach(function(g) {
+      var header = g.querySelector('.group-header, .git-project-header');
+      if (header) {
+        var name = header.querySelector('.group-name, .git-project-name');
+        if (name && collapsedGroups.has(name.textContent.trim())) {
+          g.classList.add('collapsed');
+        }
+      }
+    });
+  }
   if (scrollTop) content.scrollTop = scrollTop;
 }
 
