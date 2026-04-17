@@ -1,6 +1,6 @@
 # Codbash
 
-Dashboard + CLI for AI coding agent sessions. View, search, resume, convert, and hand off between 5 agents.
+Control room for AI coding sessions. Search, replay, and resume Claude Code, Codex, Cursor, OpenCode, and Kiro sessions without digging through scattered logs.
 
 [Russian / Русский](docs/README_RU.md) | [Chinese / 中文](docs/README_ZH.md)
 
