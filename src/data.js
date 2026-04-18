@@ -2080,17 +2080,36 @@ function loadSessionDetail(sessionId, project) {
 
       if (found.format === 'claude') {
         if (entry.type === 'user' || entry.type === 'assistant') {
-          const content = extractContent((entry.message || {}).content);
+          const rawContent = (entry.message || {}).content;
+          const content = extractContent(rawContent);
           if (content) {
             const msg = { role: entry.type, content: content.slice(0, 2000), uuid: entry.uuid || '' };
+            if (entry.type === 'user') {
+              if (isFilteredClaudeStructuredMessage(content)) continue;
+              const structured = parseStructuredMessage('claude', entry.type, content, entry);
+              if (structured) msg.structured = structured;
+            }
             if (entry.type === 'assistant') {
-              const rawContent = (entry.message || {}).content;
               if (Array.isArray(rawContent)) {
                 const tools = extractTools(rawContent);
                 if (tools.length > 0) msg.tools = tools;
               }
             }
             messages.push(msg);
+          }
+        }
+        if (entry.type === 'queue-operation') {
+          const content = extractContent(entry.content);
+          if (content) {
+            const structured = parseStructuredMessage('claude', 'queue', content, entry);
+            if (structured) {
+              messages.push({
+                role: 'queue',
+                content: content.slice(0, 2000),
+                uuid: entry.uuid || '',
+                structured: structured,
+              });
+            }
           }
         }
       } else {
@@ -2101,7 +2120,10 @@ function loadSessionDetail(sessionId, project) {
           if (role === 'user' || role === 'assistant') {
             const content = extractContent(entry.payload.content);
             if (content && !isSystemMessage(content)) {
-              messages.push({ role: role, content: content.slice(0, 2000), uuid: '' });
+              const msg = { role: role, content: content.slice(0, 2000), uuid: '' };
+              const structured = parseStructuredMessage('codex', role, content, entry);
+              if (structured) msg.structured = structured;
+              messages.push(msg);
             }
           }
           // Codex function_call → attach as tool to last assistant message
@@ -2480,6 +2502,214 @@ function extractContent(raw) {
       .join('\n');
   }
   return String(raw);
+}
+
+const STRUCTURED_TAG_PATTERN = '[a-z_][a-z0-9_-]*';
+const STRUCTURED_WRAPPER_RE = new RegExp('^<(' + STRUCTURED_TAG_PATTERN + ')>\\s*([\\s\\S]*?)\\s*</\\1>$', 'i');
+const STRUCTURED_FIELD_RE = new RegExp('<(' + STRUCTURED_TAG_PATTERN + ')>([\\s\\S]*?)</\\1>', 'ig');
+
+const CODEX_STRUCTURED_MESSAGE_FIELDS = {
+  user_shell_command: [
+    { field: 'command', max_length: 0 },
+    { field: 'result', max_length: 1500 },
+  ],
+  user_action: [
+    { field: 'context', max_length: 200 },
+    { field: 'action', max_length: 0 },
+    { field: 'results', max_length: 1500 },
+  ],
+};
+
+const CLAUDE_STRUCTURED_MESSAGE_FIELDS = {
+  slash_command: [
+    { tag: 'command-name', field: 'command_name', max_length: 200 },
+    { tag: 'command-message', field: 'command_message', max_length: 200 },
+    { tag: 'command-args', field: 'command_args', max_length: 500, required: false },
+  ],
+  bash_result: [
+    { tag: 'bash-stdout', field: 'stdout', max_length: 1500, required: false },
+    { tag: 'bash-stderr', field: 'stderr', max_length: 1500, required: false },
+  ],
+  task_notification: [
+    { tag: 'task-id', field: 'task_id', max_length: 120 },
+    { tag: 'tool-use-id', field: 'tool_use_id', max_length: 120 },
+    { tag: 'output-file', field: 'output_file', max_length: 500 },
+    { tag: 'status', field: 'status', max_length: 40 },
+    { tag: 'summary', field: 'summary', max_length: 300 },
+    { tag: 'result', field: 'result', max_length: 1500, required: false },
+    { tag: 'usage', field: 'usage', max_length: 0, required: false },
+  ],
+  task_notification_monitor: [
+    { tag: 'task-id', field: 'task_id', max_length: 120 },
+    { tag: 'summary', field: 'summary', max_length: 300 },
+    { tag: 'event', field: 'event', max_length: 1500 },
+  ],
+  task_usage: [
+    { tag: 'total_tokens', field: 'total_tokens', max_length: 40 },
+    { tag: 'tool_uses', field: 'tool_uses', max_length: 40 },
+    { tag: 'duration_ms', field: 'duration_ms', max_length: 40 },
+  ],
+};
+
+function normalizeStructuredField(value) {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function truncateStructuredField(value, maxLength) {
+  if (typeof value !== 'string') return '';
+  if (!maxLength || maxLength < 0 || value.length <= maxLength) return value;
+  return value.slice(0, maxLength);
+}
+
+function parseStructuredWrapper(content) {
+  const trimmed = typeof content === 'string' ? content.trim() : '';
+  if (!trimmed) return null;
+  const match = trimmed.match(STRUCTURED_WRAPPER_RE);
+  if (!match) return null;
+  return { tag: match[1], body: match[2] };
+}
+
+function parseStructuredFields(body, fieldDescriptors) {
+  if (!body || !Array.isArray(fieldDescriptors) || fieldDescriptors.length === 0) return null;
+
+  const fields = {};
+  const fieldsByTag = new Map(fieldDescriptors.map(function(def) {
+    return [def.tag || def.field, def];
+  }));
+  const pattern = new RegExp(STRUCTURED_FIELD_RE.source, STRUCTURED_FIELD_RE.flags);
+  let cursor = 0;
+  let match;
+
+  while ((match = pattern.exec(body))) {
+    if (body.slice(cursor, match.index).trim()) return null;
+
+    const tag = match[1];
+    const def = fieldsByTag.get(tag);
+    if (!def || fields[def.field] !== undefined) return null;
+
+    const value = normalizeStructuredField(match[2]);
+    if (!value && def.required !== false) return null;
+    fields[def.field] = value;
+    cursor = match.index + match[0].length;
+  }
+
+  if (body.slice(cursor).trim()) return null;
+
+  for (const def of fieldDescriptors) {
+    if (def.required === false) continue;
+    if (!fields[def.field]) return null;
+  }
+
+  return fields;
+}
+
+function applyStructuredFieldThresholds(fields, fieldDescriptors) {
+  const result = {};
+  for (const def of fieldDescriptors) {
+    result[def.field] = truncateStructuredField(fields[def.field], def.max_length || 0);
+  }
+  return result;
+}
+
+function parseStructuredSingleTag(content, tag, fieldName, maxLength) {
+  const wrapped = parseStructuredWrapper(content);
+  if (!wrapped || wrapped.tag !== tag) return null;
+  const value = normalizeStructuredField(wrapped.body);
+  if (!value) return null;
+  const fields = {};
+  fields[fieldName] = truncateStructuredField(value, maxLength || 0);
+  return fields;
+}
+
+function parseCodexStructuredMessage(content) {
+  const wrapped = parseStructuredWrapper(content);
+  if (!wrapped) return null;
+
+  const fieldDescriptors = CODEX_STRUCTURED_MESSAGE_FIELDS[wrapped.tag];
+  if (!fieldDescriptors) return null;
+
+  const fields = parseStructuredFields(wrapped.body, fieldDescriptors);
+  if (!fields) return null;
+
+  return {
+    agent: 'codex',
+    kind: wrapped.tag,
+    fields: applyStructuredFieldThresholds(fields, fieldDescriptors),
+  };
+}
+
+function isFilteredClaudeStructuredMessage(content) {
+  const wrapped = parseStructuredWrapper(content);
+  return !!(wrapped && wrapped.tag === 'local-command-caveat');
+}
+
+function parseClaudeTaskNotification(content) {
+  const wrapped = parseStructuredWrapper(content);
+  if (!wrapped || wrapped.tag !== 'task-notification') return null;
+
+  let fieldDescriptors = CLAUDE_STRUCTURED_MESSAGE_FIELDS.task_notification;
+  let fields = parseStructuredFields(wrapped.body, fieldDescriptors);
+  if (!fields) {
+    fieldDescriptors = CLAUDE_STRUCTURED_MESSAGE_FIELDS.task_notification_monitor;
+    fields = parseStructuredFields(wrapped.body, fieldDescriptors);
+  }
+  if (!fields) return null;
+
+  const parsedFields = applyStructuredFieldThresholds(fields, fieldDescriptors);
+  if (parsedFields.usage) {
+    const usageFields = parseStructuredFields(parsedFields.usage, CLAUDE_STRUCTURED_MESSAGE_FIELDS.task_usage);
+    if (!usageFields) return null;
+    parsedFields.usage = applyStructuredFieldThresholds(usageFields, CLAUDE_STRUCTURED_MESSAGE_FIELDS.task_usage);
+  }
+
+  return {
+    agent: 'claude',
+    kind: 'task_notification',
+    fields: parsedFields,
+  };
+}
+
+function parseClaudeStructuredMessage(entry, content) {
+  if (!content) return null;
+
+  const slashCommandFields = parseStructuredFields(content, CLAUDE_STRUCTURED_MESSAGE_FIELDS.slash_command);
+  if (slashCommandFields) {
+    return {
+      agent: 'claude',
+      kind: 'slash_command',
+      fields: applyStructuredFieldThresholds(slashCommandFields, CLAUDE_STRUCTURED_MESSAGE_FIELDS.slash_command),
+    };
+  }
+
+  const bashInputFields = parseStructuredSingleTag(content, 'bash-input', 'input', 0);
+  if (bashInputFields) {
+    return { agent: 'claude', kind: 'bash_input', fields: bashInputFields };
+  }
+
+  const bashResultFields = parseStructuredFields(content, CLAUDE_STRUCTURED_MESSAGE_FIELDS.bash_result);
+  if (bashResultFields) {
+    return {
+      agent: 'claude',
+      kind: 'bash_result',
+      fields: applyStructuredFieldThresholds(bashResultFields, CLAUDE_STRUCTURED_MESSAGE_FIELDS.bash_result),
+    };
+  }
+
+  const localCommandStdoutFields = parseStructuredSingleTag(content, 'local-command-stdout', 'output', 1500);
+  if (localCommandStdoutFields) {
+    return { agent: 'claude', kind: 'local_command_stdout', fields: localCommandStdoutFields };
+  }
+
+  return parseClaudeTaskNotification(content);
+}
+
+function parseStructuredMessage(agent, role, content, entry) {
+  if (!content) return null;
+  if (agent === 'codex') return parseCodexStructuredMessage(content);
+  if (agent === 'claude' && (role === 'user' || role === 'queue')) {
+    return parseClaudeStructuredMessage(entry, content);
+  }
+  return null;
 }
 
 // Extract MCP/Skill tool_use blocks from a Claude assistant message content array.

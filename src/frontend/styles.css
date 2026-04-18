@@ -1529,6 +1529,11 @@ body {
     border: 1px solid rgba(74, 222, 128, 0.15);
 }
 
+.msg-system {
+    background: rgba(148, 163, 184, 0.08);
+    border: 1px solid rgba(148, 163, 184, 0.18);
+}
+
 .msg-role {
     font-size: 11px;
     font-weight: 600;
@@ -1540,6 +1545,73 @@ body {
 
 .msg-content {
     white-space: pre-wrap;
+}
+
+.msg-content-plain {
+    white-space: pre-wrap;
+}
+
+.structured-message {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    white-space: normal;
+}
+
+.structured-title,
+.structured-section-label {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--text-primary);
+}
+
+.structured-context {
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--text-secondary);
+}
+
+.structured-context-label {
+    font-weight: 700;
+    color: var(--text-primary);
+}
+
+.structured-task-status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--text-secondary);
+}
+
+.structured-status {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: rgba(96, 165, 250, 0.12);
+    border: 1px solid rgba(96, 165, 250, 0.18);
+    color: var(--text-primary);
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+}
+
+.structured-block {
+    margin: 0;
+    padding: 10px 12px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--bg-card);
+    color: var(--text-primary);
+    font-family: monospace;
+    font-size: 12px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-word;
+    overflow-x: auto;
 }
 
 /* ── Commits ────────────────────────────────────────────────── */
