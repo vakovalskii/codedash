@@ -2101,7 +2101,10 @@ function loadSessionDetail(sessionId, project) {
           if (role === 'user' || role === 'assistant') {
             const content = extractContent(entry.payload.content);
             if (content && !isSystemMessage(content)) {
-              messages.push({ role: role, content: content.slice(0, 2000), uuid: '' });
+              const msg = { role: role, content: content.slice(0, 2000), uuid: '' };
+              const structured = parseStructuredMessage('codex', role, content);
+              if (structured) msg.structured = structured;
+              messages.push(msg);
             }
           }
           // Codex function_call → attach as tool to last assistant message
@@ -2480,6 +2483,98 @@ function extractContent(raw) {
       .join('\n');
   }
   return String(raw);
+}
+
+const CODEX_STRUCTURED_MESSAGE_FIELDS = {
+  user_shell_command: [
+    { field: 'command', max_length: 0 },
+    { field: 'result', max_length: 1500 },
+  ],
+  user_action: [
+    { field: 'context', max_length: 200 },
+    { field: 'action', max_length: 0 },
+    { field: 'results', max_length: 1500 },
+  ],
+};
+
+function normalizeStructuredField(value) {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function truncateStructuredField(value, maxLength) {
+  if (typeof value !== 'string') return '';
+  if (!maxLength || maxLength < 0 || value.length <= maxLength) return value;
+  return value.slice(0, maxLength);
+}
+
+function parseStructuredWrapper(content) {
+  const trimmed = typeof content === 'string' ? content.trim() : '';
+  if (!trimmed) return null;
+  const match = trimmed.match(/^<([a-z_][a-z0-9_]*)>\s*([\s\S]*?)\s*<\/\1>$/i);
+  if (!match) return null;
+  return { tag: match[1], body: match[2] };
+}
+
+function parseStructuredFields(body, fieldDescriptors) {
+  if (!body || !Array.isArray(fieldDescriptors) || fieldDescriptors.length === 0) return null;
+
+  const fields = {};
+  const allowedFields = new Set(fieldDescriptors.map(function(def) { return def.field; }));
+  const pattern = /<([a-z_][a-z0-9_]*)>([\s\S]*?)<\/\1>/ig;
+  let cursor = 0;
+  let match;
+
+  while ((match = pattern.exec(body))) {
+    if (body.slice(cursor, match.index).trim()) return null;
+
+    const tag = match[1];
+    if (!allowedFields.has(tag) || fields[tag] !== undefined) return null;
+
+    const value = normalizeStructuredField(match[2]);
+    if (!value) return null;
+    fields[tag] = value;
+    cursor = match.index + match[0].length;
+  }
+
+  if (body.slice(cursor).trim()) return null;
+  if (Object.keys(fields).length !== fieldDescriptors.length) return null;
+
+  for (const def of fieldDescriptors) {
+    if (!fields[def.field]) return null;
+  }
+
+  return fields;
+}
+
+function applyStructuredFieldThresholds(fields, fieldDescriptors) {
+  const result = {};
+  for (const def of fieldDescriptors) {
+    result[def.field] = truncateStructuredField(fields[def.field], def.max_length || 0);
+  }
+  return result;
+}
+
+function parseCodexStructuredMessage(content) {
+  const wrapped = parseStructuredWrapper(content);
+  if (!wrapped) return null;
+
+  const fieldDescriptors = CODEX_STRUCTURED_MESSAGE_FIELDS[wrapped.tag];
+  if (!fieldDescriptors) return null;
+
+  const fields = parseStructuredFields(wrapped.body, fieldDescriptors);
+  if (!fields) return null;
+
+  return {
+    agent: 'codex',
+    kind: wrapped.tag,
+    fields: applyStructuredFieldThresholds(fields, fieldDescriptors),
+  };
+}
+
+function parseStructuredMessage(agent, role, content) {
+  if (role !== 'user' || !content) return null;
+  if (agent === 'codex') return parseCodexStructuredMessage(content);
+  return null;
 }
 
 // Extract MCP/Skill tool_use blocks from a Claude assistant message content array.
