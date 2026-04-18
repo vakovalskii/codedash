@@ -278,14 +278,17 @@ function renderClaudeTaskUsage(usage) {
 }
 
 function renderClaudeTaskNotification(fields) {
-  if (!fields || !fields.status || !fields.summary) return '';
+  if (!fields || (!fields.summary && !fields.task_id && !fields.event && !fields.result)) return '';
   var html = '<div class="msg-content structured-message">';
   html += '<div class="structured-title">Task Notification:</div>';
-  html += '<div class="structured-task-status"><span class="structured-context-label">Status:</span> <span class="structured-status">' + escHtml(fields.status) + '</span></div>';
-  html += renderStructuredMeta('Summary:', fields.summary);
+  if (fields.status) {
+    html += '<div class="structured-task-status"><span class="structured-context-label">Status:</span> <span class="structured-status">' + escHtml(fields.status) + '</span></div>';
+  }
+  if (fields.summary) html += renderStructuredMeta('Summary:', fields.summary);
   html += renderStructuredMeta('Task ID:', fields.task_id);
   html += renderStructuredMeta('Tool Use ID:', fields.tool_use_id);
   if (fields.output_file) html += renderStructuredSection('Output File:', fields.output_file);
+  if (fields.event) html += renderStructuredSection('Event:', fields.event);
   if (fields.result) html += renderStructuredSection('Result:', fields.result);
   html += renderClaudeTaskUsage(fields.usage);
   html += '</div>';

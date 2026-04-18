@@ -2527,7 +2527,7 @@ const CLAUDE_STRUCTURED_MESSAGE_FIELDS = {
     { tag: 'command-args', field: 'command_args', max_length: 500, required: false },
   ],
   bash_result: [
-    { tag: 'bash-stdout', field: 'stdout', max_length: 1500 },
+    { tag: 'bash-stdout', field: 'stdout', max_length: 1500, required: false },
     { tag: 'bash-stderr', field: 'stderr', max_length: 1500, required: false },
   ],
   task_notification: [
@@ -2538,6 +2538,11 @@ const CLAUDE_STRUCTURED_MESSAGE_FIELDS = {
     { tag: 'summary', field: 'summary', max_length: 300 },
     { tag: 'result', field: 'result', max_length: 1500, required: false },
     { tag: 'usage', field: 'usage', max_length: 0, required: false },
+  ],
+  task_notification_monitor: [
+    { tag: 'task-id', field: 'task_id', max_length: 120 },
+    { tag: 'summary', field: 'summary', max_length: 300 },
+    { tag: 'event', field: 'event', max_length: 1500 },
   ],
   task_usage: [
     { tag: 'total_tokens', field: 'total_tokens', max_length: 40 },
@@ -2642,10 +2647,15 @@ function parseClaudeTaskNotification(content) {
   const wrapped = parseStructuredWrapper(content);
   if (!wrapped || wrapped.tag !== 'task-notification') return null;
 
-  const fields = parseStructuredFields(wrapped.body, CLAUDE_STRUCTURED_MESSAGE_FIELDS.task_notification);
+  let fieldDescriptors = CLAUDE_STRUCTURED_MESSAGE_FIELDS.task_notification;
+  let fields = parseStructuredFields(wrapped.body, fieldDescriptors);
+  if (!fields) {
+    fieldDescriptors = CLAUDE_STRUCTURED_MESSAGE_FIELDS.task_notification_monitor;
+    fields = parseStructuredFields(wrapped.body, fieldDescriptors);
+  }
   if (!fields) return null;
 
-  const parsedFields = applyStructuredFieldThresholds(fields, CLAUDE_STRUCTURED_MESSAGE_FIELDS.task_notification);
+  const parsedFields = applyStructuredFieldThresholds(fields, fieldDescriptors);
   if (parsedFields.usage) {
     const usageFields = parseStructuredFields(parsedFields.usage, CLAUDE_STRUCTURED_MESSAGE_FIELDS.task_usage);
     if (!usageFields) return null;
