@@ -2486,12 +2486,25 @@ function extractContent(raw) {
 }
 
 const CODEX_STRUCTURED_MESSAGE_FIELDS = {
-  user_shell_command: ['command', 'result'],
-  user_action: ['context', 'action', 'results'],
+  user_shell_command: [
+    { field: 'command', max_length: 0 },
+    { field: 'result', max_length: 1500 },
+  ],
+  user_action: [
+    { field: 'context', max_length: 200 },
+    { field: 'action', max_length: 0 },
+    { field: 'results', max_length: 1500 },
+  ],
 };
 
 function normalizeStructuredField(value) {
   return typeof value === 'string' ? value.trim() : '';
+}
+
+function truncateStructuredField(value, maxLength) {
+  if (typeof value !== 'string') return '';
+  if (!maxLength || maxLength < 0 || value.length <= maxLength) return value;
+  return value.slice(0, maxLength);
 }
 
 function parseStructuredWrapper(content) {
@@ -2502,10 +2515,11 @@ function parseStructuredWrapper(content) {
   return { tag: match[1], body: match[2] };
 }
 
-function parseStructuredFields(body, requiredTags) {
-  if (!body || !Array.isArray(requiredTags) || requiredTags.length === 0) return null;
+function parseStructuredFields(body, fieldDescriptors) {
+  if (!body || !Array.isArray(fieldDescriptors) || fieldDescriptors.length === 0) return null;
 
   const fields = {};
+  const allowedFields = new Set(fieldDescriptors.map(function(def) { return def.field; }));
   const pattern = /<([a-z_][a-z0-9_]*)>([\s\S]*?)<\/\1>/ig;
   let cursor = 0;
   let match;
@@ -2514,7 +2528,7 @@ function parseStructuredFields(body, requiredTags) {
     if (body.slice(cursor, match.index).trim()) return null;
 
     const tag = match[1];
-    if (!requiredTags.includes(tag) || fields[tag] !== undefined) return null;
+    if (!allowedFields.has(tag) || fields[tag] !== undefined) return null;
 
     const value = normalizeStructuredField(match[2]);
     if (!value) return null;
@@ -2523,29 +2537,37 @@ function parseStructuredFields(body, requiredTags) {
   }
 
   if (body.slice(cursor).trim()) return null;
-  if (Object.keys(fields).length !== requiredTags.length) return null;
+  if (Object.keys(fields).length !== fieldDescriptors.length) return null;
 
-  for (const tag of requiredTags) {
-    if (!fields[tag]) return null;
+  for (const def of fieldDescriptors) {
+    if (!fields[def.field]) return null;
   }
 
   return fields;
+}
+
+function applyStructuredFieldThresholds(fields, fieldDescriptors) {
+  const result = {};
+  for (const def of fieldDescriptors) {
+    result[def.field] = truncateStructuredField(fields[def.field], def.max_length || 0);
+  }
+  return result;
 }
 
 function parseCodexStructuredMessage(content) {
   const wrapped = parseStructuredWrapper(content);
   if (!wrapped) return null;
 
-  const requiredTags = CODEX_STRUCTURED_MESSAGE_FIELDS[wrapped.tag];
-  if (!requiredTags) return null;
+  const fieldDescriptors = CODEX_STRUCTURED_MESSAGE_FIELDS[wrapped.tag];
+  if (!fieldDescriptors) return null;
 
-  const fields = parseStructuredFields(wrapped.body, requiredTags);
+  const fields = parseStructuredFields(wrapped.body, fieldDescriptors);
   if (!fields) return null;
 
   return {
     agent: 'codex',
     kind: wrapped.tag,
-    fields,
+    fields: applyStructuredFieldThresholds(fields, fieldDescriptors),
   };
 }
 
