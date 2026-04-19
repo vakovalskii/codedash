@@ -201,6 +201,9 @@ function setView(view) {
     currentView = view;
   }
 
+  // Clear project drill-down filter on any sidebar navigation
+  gitProjectFilter = null;
+
   // Update sidebar active state
   document.querySelectorAll('.sidebar-item').forEach(function(el) {
     el.classList.toggle('active', el.getAttribute('data-view') === view);

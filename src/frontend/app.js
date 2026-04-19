@@ -11,6 +11,7 @@ let layout = localStorage.getItem('codedash-layout') || 'grid'; // 'grid' or 'li
 let groupingMode = normalizeGroupingMode(localStorage.getItem('codedash-grouping-mode'));
 let searchQuery = '';
 let toolFilter = null;  // null, 'claude', 'codex'
+let gitProjectFilter = null; // null or { key, name } — drill-down from Projects view
 let tagFilter = '';
 let dateFrom = '';
 let dateTo = '';
@@ -447,10 +448,17 @@ function generateAllTitles() {
 
 // ── Data loading ───────────────────────────────────────────────
 
+var _loadSessionsInFlight = false;
+
 async function loadSessions() {
+  if (_loadSessionsInFlight) return;
+  _loadSessionsInFlight = true;
   try {
     var resp = await fetch('/api/sessions');
     allSessions = await resp.json();
+    // Invalidate analytics cache so stale aggregates are not shown
+    _analyticsHtmlCache = null;
+    _analyticsCacheUrl = null;
     applyFilters();
     // Progressive loading: if server is still loading cursor vscdb sessions, auto-refresh
     if (resp.headers.get('X-Loading') === '1') {
@@ -458,6 +466,8 @@ async function loadSessions() {
     }
   } catch (e) {
     document.getElementById('content').innerHTML = '<div class="empty-state">Failed to load sessions. Is the server running?</div>';
+  } finally {
+    _loadSessionsInFlight = false;
   }
 }
 
@@ -647,6 +657,12 @@ function applyFilters() {
     if (toolFilter) {
       var toolMatch = s.tool === toolFilter || (s.tool === 'claude-ext' && toolFilter === 'claude');
       if (!toolMatch) continue;
+    }
+
+    // Git project drill-down filter (always uses git-root key, independent of groupingMode)
+    if (gitProjectFilter) {
+      var sessionProjectKey = getRepoInfo(s.project, s.git_root).key;
+      if (sessionProjectKey !== gitProjectFilter.key) continue;
     }
 
     // Tag filter
@@ -975,9 +991,28 @@ function render() {
 
   // Stats
   if (stats) {
-    stats.textContent = sessions.length + ' sessions' +
-      (toolFilter ? ' (' + toolFilter + ')' : '') +
-      (tagFilter ? ' [' + tagFilter + ']' : '');
+    var statsText = sessions.length + ' sessions';
+    if (toolFilter) statsText += ' (' + toolFilter + ')';
+    if (tagFilter) statsText += ' [' + tagFilter + ']';
+    stats.textContent = statsText;
+  }
+
+  // Project filter breadcrumb
+  var existingBreadcrumb = document.getElementById('gitProjectBreadcrumb');
+  if (gitProjectFilter && currentView === 'sessions') {
+    if (!existingBreadcrumb) {
+      var bc = document.createElement('div');
+      bc.id = 'gitProjectBreadcrumb';
+      bc.className = 'git-project-breadcrumb';
+      var toolbar = document.querySelector('.toolbar');
+      if (toolbar) toolbar.parentNode.insertBefore(bc, toolbar.nextSibling);
+    }
+    document.getElementById('gitProjectBreadcrumb').innerHTML =
+      '<span class="bc-label">Project:</span>' +
+      '<span class="bc-name">' + escHtml(gitProjectFilter.name) + '</span>' +
+      '<button class="bc-clear" onclick="clearGitProjectFilter()" title="Show all projects">&times; Clear filter</button>';
+  } else if (existingBreadcrumb) {
+    existingBreadcrumb.remove();
   }
 
   // Route to view
@@ -1172,15 +1207,15 @@ function renderQACard(s, idx) {
 }
 
 function renderProjects(container, sessions) {
-  var byGit = {};
+  var byGit = {};   // key → { name, list }
   sessions.forEach(function(s) {
-    var name = getGitProjectName(s.project, s.git_root);
-    if (!byGit[name]) byGit[name] = [];
-    byGit[name].push(s);
+    var info = getRepoInfo(s.project, s.git_root);
+    if (!byGit[info.key]) byGit[info.key] = { name: info.name, list: [] };
+    byGit[info.key].list.push(s);
   });
 
   var sorted = Object.entries(byGit).sort(function(a, b) {
-    return b[1][0].last_ts - a[1][0].last_ts;
+    return b[1].list[0].last_ts - a[1].list[0].last_ts;
   });
 
   if (sorted.length === 0) {
@@ -1195,9 +1230,10 @@ function renderProjects(container, sessions) {
   html += '</div>';
   html += '<div class="git-projects">';
   sorted.forEach(function(entry) {
-    var name = entry[0];
-    var list = entry[1].slice().sort(function(a, b) { return b.last_ts - a.last_ts; });
-    var color = getProjectColor(name);
+    var projKey = entry[0];
+    var projName = entry[1].name;
+    var list = entry[1].list.slice().sort(function(a, b) { return b.last_ts - a.last_ts; });
+    var color = getProjectColor(projName);
     var totalMsgs = list.reduce(function(s, e) { return s + (e.messages || 0); }, 0);
     var totalCost = list.reduce(function(s, e) { return s + estimateCost(e.file_size); }, 0);
     var costLabel = totalCost > 0 ? ' · ~$' + totalCost.toFixed(2) : '';
@@ -1205,8 +1241,9 @@ function renderProjects(container, sessions) {
     html += '<div class="git-project-group">';
     html += '<div class="git-project-header" onclick="this.parentElement.classList.toggle(\'collapsed\')">';
     html += '<span class="group-dot" style="background:' + color + '"></span>';
-    html += '<span class="git-project-name">' + escHtml(name) + '</span>';
+    html += '<span class="git-project-name">' + escHtml(projName) + '</span>';
     html += '<span class="git-project-stats">' + list.length + ' sessions · ' + totalMsgs + ' msgs' + escHtml(costLabel) + '</span>';
+    html += '<button class="git-project-open-btn" data-proj-key="' + escHtml(projKey) + '" data-proj-name="' + escHtml(projName) + '" onclick="event.stopPropagation();drillIntoGitProject(this.dataset.projKey,this.dataset.projName)" title="Show only this project\'s sessions">Open &rsaquo;</button>';
     html += '<span class="group-chevron">&#9660;</span>';
     html += '</div>';
     html += '<div class="qa-list">';
@@ -1377,6 +1414,34 @@ function openProject(name) {
   document.querySelector('.search-box').value = name;
   document.querySelectorAll('.sidebar-item').forEach(function(el) {
     el.classList.toggle('active', el.getAttribute('data-view') === 'sessions');
+  });
+  applyFilters();
+}
+
+function drillIntoGitProject(key, name) {
+  gitProjectFilter = { key: key, name: name };
+  currentView = 'sessions';
+  // Reset other filters so they don't silently suppress results
+  searchQuery = '';
+  tagFilter = '';
+  dateFrom = '';
+  dateTo = '';
+  var searchBox = document.querySelector('.search-box');
+  if (searchBox) searchBox.value = '';
+  var tagSel = document.getElementById('tagFilter');
+  if (tagSel) tagSel.value = '';
+  updateDateBtn();
+  document.querySelectorAll('.sidebar-item').forEach(function(el) {
+    el.classList.toggle('active', el.getAttribute('data-view') === 'sessions');
+  });
+  applyFilters();
+}
+
+function clearGitProjectFilter() {
+  gitProjectFilter = null;
+  currentView = 'projects';
+  document.querySelectorAll('.sidebar-item').forEach(function(el) {
+    el.classList.toggle('active', el.getAttribute('data-view') === 'projects');
   });
   applyFilters();
 }
@@ -1980,6 +2045,7 @@ function dismissUpdate() {
   loadTerminals();
   checkForUpdates();
   setInterval(checkForUpdates, 10000); // check every 10s
+  setInterval(loadSessions, 60000);    // refresh sessions + invalidate analytics cache every 60s
   startActivePolling();
 
   // Apply saved theme
