@@ -447,10 +447,17 @@ function generateAllTitles() {
 
 // ── Data loading ───────────────────────────────────────────────
 
+var _loadSessionsInFlight = false;
+
 async function loadSessions() {
+  if (_loadSessionsInFlight) return;
+  _loadSessionsInFlight = true;
   try {
     var resp = await fetch('/api/sessions');
     allSessions = await resp.json();
+    // Invalidate analytics cache so stale aggregates are not shown
+    _analyticsHtmlCache = null;
+    _analyticsCacheUrl = null;
     applyFilters();
     // Progressive loading: if server is still loading cursor vscdb sessions, auto-refresh
     if (resp.headers.get('X-Loading') === '1') {
@@ -458,6 +465,8 @@ async function loadSessions() {
     }
   } catch (e) {
     document.getElementById('content').innerHTML = '<div class="empty-state">Failed to load sessions. Is the server running?</div>';
+  } finally {
+    _loadSessionsInFlight = false;
   }
 }
 
@@ -1980,6 +1989,7 @@ function dismissUpdate() {
   loadTerminals();
   checkForUpdates();
   setInterval(checkForUpdates, 10000); // check every 10s
+  setInterval(loadSessions, 60000);    // refresh sessions + invalidate analytics cache every 60s
   startActivePolling();
 
   // Apply saved theme
