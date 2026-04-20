@@ -299,6 +299,7 @@ body {
 .tool-chip:hover { color: var(--text-primary); }
 .tool-chip.active-claude { background: rgba(96, 165, 250, 0.2); border-color: var(--accent-blue); color: var(--accent-blue); }
 .tool-chip.active-codex { background: rgba(34, 211, 238, 0.2); border-color: var(--accent-cyan); color: var(--accent-cyan); }
+.tool-chip.active-qwen { background: rgba(251, 191, 36, 0.2); border-color: #fbbf24; color: #fbbf24; }
 
 .stats { color: var(--text-muted); font-size: 13px; white-space: nowrap; }
 
@@ -466,6 +467,7 @@ body {
 }
 .badge-claude { background: rgba(96, 165, 250, 0.15); color: var(--accent-blue); }
 .badge-codex { background: rgba(34, 211, 238, 0.15); color: var(--accent-cyan); }
+.badge-qwen { background: rgba(251, 191, 36, 0.15); color: #fbbf24; }
 
 [data-theme="light"] .badge { background: rgba(0,0,0,0.05); }
 
@@ -1200,6 +1202,11 @@ body {
 .tool-codex {
     background: rgba(34, 211, 238, 0.15);
     color: var(--accent-cyan);
+}
+
+.tool-qwen {
+    background: rgba(251, 191, 36, 0.15);
+    color: #fbbf24;
 }
 
 .tool-opencode {
