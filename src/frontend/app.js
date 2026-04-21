@@ -111,7 +111,9 @@ var TOOL_META = {
   qwen: { label: 'Qwen Code', shortLabel: 'qwen', color: '#fbbf24' },
   cursor: { label: 'Cursor', shortLabel: 'cursor', color: '#4a9eff' },
   opencode: { label: 'OpenCode', shortLabel: 'opencode', color: '#c084fc' },
-  kiro: { label: 'Kiro', shortLabel: 'kiro', color: '#fb923c' }
+  kiro: { label: 'Kiro', shortLabel: 'kiro', color: '#fb923c' },
+  kilo: { label: 'Kilo CLI', shortLabel: 'kilo', color: '#34d399' },
+  'copilot-chat': { label: 'Copilot Chat', shortLabel: 'copilot', color: '#8b6fc0' }
 };
 
 function getToolLabel(tool, shortLabel) {
@@ -1971,6 +1973,12 @@ var AGENT_INSTALL = {
     cmd: 'npm i -g @kilocode/cli',
     alt: null,
     url: 'https://kilo.ai',
+  },
+  'copilot-chat': {
+    name: 'Copilot Chat (VS Code)',
+    cmd: null,
+    alt: null,
+    url: 'https://github.com/features/copilot',
   },
 };
 

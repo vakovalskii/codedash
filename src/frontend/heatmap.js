@@ -187,7 +187,8 @@ function renderHeatmap(container) {
     cursor: '#4a9eff',
     opencode: '#c084fc',
     kiro: '#fb923c',
-    kilo: '#34d399'
+    kilo: '#34d399',
+    'copilot-chat': '#8b6fc0'
   };
   html += '<div class="gh-tools">';
   Object.keys(toolTotals).sort(function(a,b) { return toolTotals[b] - toolTotals[a]; }).forEach(function(tool) {
