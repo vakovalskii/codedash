@@ -83,7 +83,10 @@ codedash stop
 ~/.cursor/projects/*/agent-transcripts/ Cursor agent sessions
 ~/.local/share/opencode/opencode.db     OpenCode (SQLite)
 ~/Library/Application Support/kiro-cli/ Kiro CLI (SQLite)
-~/.config/Code/User/workspaceStorage/   Copilot Chat (JSON/JSONL)
+<vscode-user-data>/workspaceStorage/    Copilot Chat (JSON/JSONL)
+  # Linux:   ~/.config/Code
+  # macOS:   ~/Library/Application Support/Code
+  # Windows: %APPDATA%\Code
 ```
 
 Zero dependencies. Everything runs on `localhost`.

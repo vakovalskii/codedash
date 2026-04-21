@@ -244,7 +244,7 @@ FROM conversations_v2 ORDER BY updated_at DESC
 3. scanOpenCodeSessions() → merge (tool: "opencode")
 4. scanCursorSessions() → merge (tool: "cursor")
 5. scanKiroSessions() → merge (tool: "kiro")
-5a. scanCopilotSessions() → merge (tool: "copilot")
+5a. scanCopilotSessions() → merge (tool: "copilot-chat")
 6. Enrich Claude sessions with detail files:
    - Count messages, get file size
    - Check entrypoint → change tool to "claude-ext" if not "cli"

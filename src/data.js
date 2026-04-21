@@ -1235,12 +1235,23 @@ const COPILOT_WS_MAP_TTL = 600000; // 10 minutes
 function buildCopilotWorkspaceMap() {
   if (_copilotWsMapCache) return _copilotWsMapCache;
 
-  // Try disk cache first
+  // Current mtime of VS Code workspaceStorage — cache is invalidated if it changed
+  let currentWsMtime = 0;
+  try {
+    if (fs.existsSync(VSCODE_WORKSPACE_STORAGE)) {
+      currentWsMtime = fs.statSync(VSCODE_WORKSPACE_STORAGE).mtimeMs;
+    }
+  } catch {}
+
+  // Try disk cache first — valid only if TTL not expired AND workspaceStorage mtime unchanged
   try {
     if (fs.existsSync(COPILOT_WS_MAP_CACHE_FILE)) {
       const cached = JSON.parse(fs.readFileSync(COPILOT_WS_MAP_CACHE_FILE, 'utf8'));
-      if (cached._ts && (Date.now() - cached._ts) < COPILOT_WS_MAP_TTL) {
+      const fresh = cached._ts && (Date.now() - cached._ts) < COPILOT_WS_MAP_TTL;
+      const mtimeMatches = cached._wsMtime === currentWsMtime;
+      if (fresh && mtimeMatches) {
         delete cached._ts;
+        delete cached._wsMtime;
         _copilotWsMapCache = cached;
         return cached;
       }
@@ -1283,6 +1294,7 @@ function buildCopilotWorkspaceMap() {
     const toSave = {};
     for (const k of Object.keys(map)) toSave[k] = map[k];
     toSave._ts = Date.now();
+    toSave._wsMtime = currentWsMtime;
     fs.writeFileSync(COPILOT_WS_MAP_CACHE_FILE, JSON.stringify(toSave));
   } catch {}
 
