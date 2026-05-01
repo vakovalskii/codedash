@@ -1,18 +1,18 @@
-# CodeDash
+# Codbash
 
-Dashboard + CLI for AI coding agent sessions. View, search, resume, convert, and hand off between 5 agents.
+Control room for AI coding sessions. Search, replay, and resume Claude Code, Codex, Qwen, Cursor, OpenCode, Kiro, Kilo, and Copilot Chat sessions without digging through scattered logs.
 
 [Russian / Русский](docs/README_RU.md) | [Chinese / 中文](docs/README_ZH.md)
 
 https://github.com/user-attachments/assets/15c45659-365b-49f8-86a3-9005fa155ca6
 
-![npm](https://img.shields.io/npm/v/codedash-app?style=flat-square) ![Node](https://img.shields.io/badge/node-%3E%3D18-green?style=flat-square) ![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square) ![Zero deps](https://img.shields.io/badge/dependencies-0-blue?style=flat-square)
+![npm](https://img.shields.io/npm/v/codbash-app?style=flat-square) ![Node](https://img.shields.io/badge/node-%3E%3D18-green?style=flat-square) ![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square) ![Zero deps](https://img.shields.io/badge/dependencies-0-blue?style=flat-square)
 
 ## Quick Start
 
 ```bash
-npm i -g codedash-app
-codedash run
+npm i -g codbash-app
+codbash run
 ```
 
 ## Supported Agents
@@ -24,6 +24,7 @@ codedash run
 | Cursor | JSONL | Yes | Yes | Yes | - | Yes | Open in Cursor |
 | OpenCode | SQLite | Yes | Yes | Yes | - | Yes | Terminal |
 | Kiro CLI | SQLite | Yes | Yes | Yes | - | Yes | Terminal |
+| Copilot Chat | JSON/JSONL | Yes | Yes | - | - | Yes | - |
 
 Also detects Claude Code running inside Cursor (via `claude-vscode` entrypoint).
 
@@ -40,7 +41,7 @@ Also detects Claude Code running inside Cursor (via `claude-vscode` entrypoint).
 - Themes: Dark, Light, System
 
 **Live Monitoring**
-- LIVE/WAITING badges on all 5 agent types
+- LIVE/WAITING badges on all agent types
 - Animated border on active session cards
 - Running view with CPU, Memory, PID, Uptime
 - Focus Terminal / Open in Cursor buttons
@@ -54,22 +55,22 @@ Also detects Claude Code running inside Cursor (via `claude-vscode` entrypoint).
 **Cross-Agent**
 - Convert sessions between Claude Code and Codex
 - Handoff: generate context document to continue in any agent
-- Install Agents: one-click install commands for all 5 agents
+- Install Agents: one-click install commands for all agents
 
 **CLI**
 ```bash
-codedash run [--port=N] [--no-browser]
-codedash search <query>
-codedash show <session-id>
-codedash handoff <id> [target] [--verbosity=full] [--out=file.md]
-codedash convert <id> claude|codex
-codedash list [limit]
-codedash stats
-codedash export [file.tar.gz]
-codedash import <file.tar.gz>
-codedash update
-codedash restart
-codedash stop
+codbash run [--port=N] [--no-browser]
+codbash search <query>
+codbash show <session-id>
+codbash handoff <id> [target] [--verbosity=full] [--out=file.md]
+codbash convert <id> claude|codex
+codbash list [limit]
+codbash stats
+codbash export [file.tar.gz]
+codbash import <file.tar.gz>
+codbash update
+codbash restart
+codbash stop
 ```
 
 **Keyboard Shortcuts**: `/` search, `j/k` navigate, `Enter` open, `x` star, `d` delete, `s` select, `g` group, `r` refresh, `Esc` close
@@ -82,6 +83,10 @@ codedash stop
 ~/.cursor/projects/*/agent-transcripts/ Cursor agent sessions
 ~/.local/share/opencode/opencode.db     OpenCode (SQLite)
 ~/Library/Application Support/kiro-cli/ Kiro CLI (SQLite)
+<vscode-user-data>/workspaceStorage/    Copilot Chat (JSON/JSONL)
+  # Linux:   ~/.config/Code
+  # macOS:   ~/Library/Application Support/Code
+  # Windows: %APPDATA%\Code
 ```
 
 Zero dependencies. Everything runs on `localhost`.

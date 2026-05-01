@@ -9,7 +9,7 @@ async function openDetail(s) {
 
   title.textContent = escHtml(getProjectName(s.project)) + ' / ' + s.id.slice(0, 12);
 
-  var cost = estimateCost(s.file_size);
+  var cost = getEstimatedSessionCost(s);
   var costStr = cost > 0 ? '~$' + cost.toFixed(2) : '';
   var isStarred = stars.indexOf(s.id) >= 0;
   var sessionTags = tags[s.id] || [];
@@ -26,7 +26,7 @@ async function openDetail(s) {
   } else if (s.has_detail) {
     infoHtml += '<div class="detail-row"><span class="detail-label">Name</span><button class="toolbar-btn" style="font-size:11px;padding:2px 8px" onclick="generateTitle(\'' + s.id + '\',\'' + escProject + '\')">Generate AI Name</button></div>';
   }
-  var detailToolLabel = s.tool === 'claude-ext' ? 'claude ext' : s.tool;
+  var detailToolLabel = getToolLabel(s.tool);
   infoHtml += '<div class="detail-row"><span class="detail-label">Tool</span><span class="tool-badge tool-' + s.tool + '">' + escHtml(detailToolLabel) + '</span></div>';
   infoHtml += '<div class="detail-row"><span class="detail-label">Project</span><span>' + escHtml(s.project_short || s.project || '') + '</span></div>';
   infoHtml += '<div class="detail-git-info" id="detail-git-info"></div>';
@@ -83,8 +83,9 @@ async function openDetail(s) {
   if (s.has_detail) {
     infoHtml += '<button class="launch-btn btn-secondary" onclick="closeDetail();openReplay(\'' + s.id + '\',\'' + escHtml(s.project || '') + '\')">Replay</button>';
     infoHtml += '<button class="launch-btn btn-secondary" onclick="exportMd(\'' + s.id + '\',\'' + escHtml(s.project || '') + '\')">Export MD</button>';
-    var convertTarget = s.tool === 'codex' ? 'claude' : 'codex';
-    infoHtml += '<button class="launch-btn btn-secondary" onclick="convertTo(\'' + s.id + '\',\'' + escHtml(s.project || '') + '\',\'' + convertTarget + '\')">Convert to ' + convertTarget + '</button>';
+    getConvertTargets(s.tool).forEach(function(target) {
+      infoHtml += '<button class="launch-btn btn-secondary" onclick="convertTo(\'' + s.id + '\',\'' + escHtml(s.project || '') + '\',\'' + target + '\')">Convert to ' + getToolLabel(target) + '</button>';
+    });
     infoHtml += '<button class="launch-btn btn-secondary" onclick="downloadHandoff(\'' + s.id + '\',\'' + escHtml(s.project || '') + '\')">Handoff</button>';
   }
   infoHtml += '<button class="star-btn detail-star' + (isStarred ? ' active' : '') + '" onclick="toggleStar(\'' + s.id + '\')">&#9733; ' + (isStarred ? 'Starred' : 'Star') + '</button>';
@@ -103,30 +104,8 @@ async function openDetail(s) {
       var data = await resp.json();
       var msgContainer = body.querySelector('.detail-messages');
       if (data.messages && data.messages.length > 0) {
-        var msgsHtml = '<h3>Conversation</h3>';
-        data.messages.forEach(function(m) {
-          var roleClass = m.role === 'user' ? 'msg-user' : 'msg-assistant';
-          var roleLabel = m.role === 'user' ? 'You' : 'Assistant';
-          var hasTools = m.tools && m.tools.length > 0;
-          msgsHtml += '<div class="message ' + roleClass + (hasTools ? ' has-tools' : '') + '">';
-          msgsHtml += '<div class="msg-inner">';
-          msgsHtml += '<div class="msg-role">' + roleLabel + '</div>';
-          msgsHtml += '<div class="msg-content">' + escHtml(m.content) + '</div>';
-          msgsHtml += '</div>';
-          if (hasTools) {
-            msgsHtml += '<div class="msg-tools">';
-            m.tools.forEach(function(t) {
-              if (t.type === 'mcp') {
-                msgsHtml += '<span class="tool-badge badge-mcp">' + escHtml(t.tool) + '</span>';
-              } else if (t.type === 'skill') {
-                msgsHtml += '<span class="tool-badge badge-skill">' + escHtml(t.skill) + '</span>';
-              }
-            });
-            msgsHtml += '</div>';
-          }
-          msgsHtml += '</div>';
-        });
-        msgContainer.innerHTML = msgsHtml;
+        window._detailMessages = data.messages;
+        renderDetailMessages(msgContainer, data.messages);
       } else {
         msgContainer.innerHTML = '<div class="empty-state">No messages found in detail file.</div>';
       }
@@ -139,15 +118,20 @@ async function openDetail(s) {
 
   // Load real cost
   loadRealCost(s.id, s.project || '').then(function(costData) {
-    if (!costData || !costData.cost) return;
+    if (!costData) return;
+    var totalTokens = (costData.inputTokens || 0) + (costData.outputTokens || 0) + (costData.cacheReadTokens || 0) + (costData.cacheCreateTokens || 0);
+    if (!costData.cost && !totalTokens) return;
     var row = document.getElementById('detail-real-cost');
     if (row) {
       row.style.display = '';
       var cacheStr = '';
       if ((costData.cacheReadTokens || 0) + (costData.cacheCreateTokens || 0) > 0)
         cacheStr = ' / ' + formatTokens((costData.cacheReadTokens||0) + (costData.cacheCreateTokens||0)) + ' cache';
+      var valueHtml = costData.unavailable
+        ? '<span class="cost-badge" style="background:rgba(251,191,36,0.2);color:#fbbf24">pricing unavailable</span>'
+        : '<span class="cost-badge" style="background:rgba(74,222,128,0.2);color:var(--accent-green)">$' + costData.cost.toFixed(2) + '</span>';
       row.querySelector('span:last-child').innerHTML =
-        '<span class="cost-badge" style="background:rgba(74,222,128,0.2);color:var(--accent-green)">$' + costData.cost.toFixed(2) + '</span>' +
+        valueHtml +
         ' <span style="font-size:11px;color:var(--text-muted)">' +
         formatTokens(costData.inputTokens) + ' in / ' + formatTokens(costData.outputTokens) + ' out' + cacheStr +
         (costData.model ? ' (' + costData.model + ')' : '') + '</span>';
@@ -206,6 +190,181 @@ function closeDetail() {
   var overlay = document.getElementById('overlay');
   if (panel) panel.classList.remove('open');
   if (overlay) overlay.classList.remove('open');
+}
+
+var structuredMessageRenderers = {
+  'codex:user_shell_command': renderCodexUserShellCommand,
+  'codex:user_action': renderCodexUserAction,
+  'claude:slash_command': renderClaudeSlashCommand,
+  'claude:bash_input': renderClaudeBashInput,
+  'claude:bash_result': renderClaudeBashResult,
+  'claude:local_command_stdout': renderClaudeLocalCommandStdout,
+  'claude:task_notification': renderClaudeTaskNotification,
+};
+
+function renderStructuredBlock(text) {
+  return '<pre class="structured-block">' + escHtml(text || '') + '</pre>';
+}
+
+function renderStructuredSection(label, text) {
+  return '<div class="structured-section-label">' + escHtml(label) + '</div>' + renderStructuredBlock(text);
+}
+
+function renderStructuredMeta(label, text) {
+  if (!text) return '';
+  return '<div class="structured-context"><span class="structured-context-label">' + escHtml(label) + '</span> ' + escHtml(text) + '</div>';
+}
+function renderCodexUserShellCommand(fields) {
+  if (!fields || !fields.command || !fields.result) return '';
+  var html = '<div class="msg-content structured-message">';
+  html += '<div class="structured-title">User Shell Command:</div>';
+  html += renderStructuredSection('Command:', fields.command);
+  html += renderStructuredSection('Result:', fields.result);
+  html += '</div>';
+  return html;
+}
+
+function renderCodexUserAction(fields) {
+  if (!fields || !fields.context || !fields.action || !fields.results) return '';
+  var html = '<div class="msg-content structured-message">';
+  html += '<div class="structured-title">User Action:</div>';
+  html += '<div class="structured-context"><span class="structured-context-label">Context:</span> ' + escHtml(fields.context) + '</div>';
+  html += renderStructuredSection('Action:', fields.action);
+  html += renderStructuredSection('Results:', fields.results);
+  html += '</div>';
+  return html;
+}
+
+function renderClaudeSlashCommand(fields) {
+  if (!fields || !fields.command_name || !fields.command_message) return '';
+  var html = '<div class="msg-content structured-message">';
+  html += '<div class="structured-title">Slash Command:</div>';
+  html += renderStructuredMeta('Command:', fields.command_name);
+  html += renderStructuredMeta('Message:', fields.command_message);
+  if (fields.command_args) html += renderStructuredSection('Args:', fields.command_args);
+  html += '</div>';
+  return html;
+}
+
+function renderClaudeBashInput(fields) {
+  if (!fields || !fields.input) return '';
+  var html = '<div class="msg-content structured-message">';
+  html += '<div class="structured-title">Bash Input:</div>';
+  html += renderStructuredSection('Command:', fields.input);
+  html += '</div>';
+  return html;
+}
+
+function renderClaudeBashResult(fields) {
+  if (!fields || (!fields.stdout && !fields.stderr)) return '';
+  var html = '<div class="msg-content structured-message">';
+  html += '<div class="structured-title">Bash Result:</div>';
+  if (fields.stdout) html += renderStructuredSection('Stdout:', fields.stdout);
+  if (fields.stderr) html += renderStructuredSection('Stderr:', fields.stderr);
+  html += '</div>';
+  return html;
+}
+
+function renderClaudeLocalCommandStdout(fields) {
+  if (!fields || !fields.output) return '';
+  var html = '<div class="msg-content structured-message">';
+  html += '<div class="structured-title">Local Command Output:</div>';
+  html += renderStructuredSection('Output:', fields.output);
+  html += '</div>';
+  return html;
+}
+
+function renderClaudeTaskUsage(usage) {
+  if (!usage) return '';
+  var parts = [];
+  if (usage.total_tokens) parts.push(usage.total_tokens + ' tokens');
+  if (usage.tool_uses) parts.push(usage.tool_uses + ' tools');
+  if (usage.duration_ms) parts.push(usage.duration_ms + ' ms');
+  if (parts.length === 0) return '';
+  return renderStructuredMeta('Usage:', parts.join(', '));
+}
+
+function sanitizeClassToken(value, fallback) {
+  var token = String(value || '').toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '');
+  return token || (fallback || 'unknown');
+}
+
+function renderClaudeTaskNotification(fields) {
+  if (!fields || (!fields.summary && !fields.task_id && !fields.event && !fields.result)) return '';
+  var html = '<div class="msg-content structured-message">';
+  html += '<div class="structured-title">Task Notification:</div>';
+  if (fields.status) {
+    var statusClass = sanitizeClassToken(fields.status, 'unknown');
+    html += '<div class="structured-task-status"><span class="structured-context-label">Status:</span> <span class="structured-status structured-status-' + statusClass + '">' + escHtml(fields.status) + '</span></div>';
+  }
+  if (fields.summary) html += renderStructuredMeta('Summary:', fields.summary);
+  html += renderStructuredMeta('Task ID:', fields.task_id);
+  html += renderStructuredMeta('Tool Use ID:', fields.tool_use_id);
+  if (fields.output_file) html += renderStructuredSection('Output File:', fields.output_file);
+  if (fields.event) html += renderStructuredSection('Event:', fields.event);
+  if (fields.result) html += renderStructuredSection('Result:', fields.result);
+  html += renderClaudeTaskUsage(fields.usage);
+  html += '</div>';
+  return html;
+}
+function renderMessageContent(message) {
+  var structured = message && message.structured;
+  if (structured && structured.agent && structured.kind) {
+    var key = structured.agent + ':' + structured.kind;
+    var renderer = structuredMessageRenderers[key];
+    if (renderer) {
+      var rendered = renderer(structured.fields || {});
+      if (rendered) return rendered;
+    }
+  }
+  return '<div class="msg-content msg-content-plain">' + escHtml((message && message.content) || '') + '</div>';
+}
+
+function getMessageRoleMeta(role) {
+  if (role === 'user') return { className: 'msg-user', label: 'You' };
+  if (role === 'queue') return { className: 'msg-system', label: 'Queue' };
+  if (role === 'system') return { className: 'msg-system', label: 'System' };
+  return { className: 'msg-assistant', label: 'Assistant' };
+}
+function renderDetailMessages(container, messages) {
+  var sort = localStorage.getItem('codedash-msg-sort') || 'asc';
+  var sorted = sort === 'desc' ? messages.slice().reverse() : messages;
+  var btnLabel = sort === 'asc' ? '&#8593; Oldest first' : '&#8595; Newest first';
+  var msgsHtml = '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">';
+  msgsHtml += '<h3 style="margin:0">Conversation</h3>';
+  msgsHtml += '<button class="theme-btn" onclick="toggleMsgSort()" title="Toggle sort order" style="font-size:11px;padding:3px 10px">' + btnLabel + '</button>';
+  msgsHtml += '</div>';
+  sorted.forEach(function(m) {
+    var roleMeta = getMessageRoleMeta(m.role);
+    var hasTools = m.tools && m.tools.length > 0;
+    msgsHtml += '<div class="message ' + roleMeta.className + (hasTools ? ' has-tools' : '') + '">';
+    msgsHtml += '<div class="msg-inner">';
+    msgsHtml += '<div class="msg-role">' + roleMeta.label + '</div>';
+    msgsHtml += renderMessageContent(m);
+    msgsHtml += '</div>';
+    if (hasTools) {
+      msgsHtml += '<div class="msg-tools">';
+      m.tools.forEach(function(t) {
+        if (t.type === 'mcp') {
+          msgsHtml += '<span class="tool-badge badge-mcp">' + escHtml(t.tool) + '</span>';
+        } else if (t.type === 'skill') {
+          msgsHtml += '<span class="tool-badge badge-skill">' + escHtml(t.skill) + '</span>';
+        }
+      });
+      msgsHtml += '</div>';
+    }
+    msgsHtml += '</div>';
+  });
+  container.innerHTML = msgsHtml;
+}
+
+function toggleMsgSort() {
+  var current = localStorage.getItem('codedash-msg-sort') || 'asc';
+  localStorage.setItem('codedash-msg-sort', current === 'asc' ? 'desc' : 'asc');
+  var container = document.querySelector('.detail-messages');
+  if (container && window._detailMessages) {
+    renderDetailMessages(container, window._detailMessages);
+  }
 }
 
 // ── Detail panel resize ───────────────────────────────────────
@@ -280,14 +439,7 @@ function launchSession(sessionId, tool, project, flags) {
 
 function copyResume(sessionId, tool) {
   var s = allSessions.find(function(x) { return x.id === sessionId; });
-  var cmd;
-  if (tool === 'codex') {
-    cmd = 'codex resume ' + sessionId;
-  } else if (tool === 'cursor') {
-    cmd = 'cursor ' + (s && s.project ? '"' + s.project + '"' : '.');
-  } else {
-    cmd = 'claude --resume ' + sessionId;
-  }
+  var cmd = getResumeCommand(tool, sessionId, s && s.project ? s.project : '');
   copyText(cmd, 'Copied: ' + cmd);
 }
 

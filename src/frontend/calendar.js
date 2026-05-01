@@ -184,22 +184,31 @@ function setView(view) {
   } else if (view === 'codex-only') {
     toolFilter = toolFilter === 'codex' ? null : 'codex';
     currentView = 'sessions';
+  } else if (view === 'qwen-only') {
+    toolFilter = toolFilter === 'qwen' ? null : 'qwen';
+    currentView = 'sessions';
   } else if (view === 'cursor-only') {
     toolFilter = toolFilter === 'cursor' ? null : 'cursor';
     currentView = 'sessions';
   } else if (view === 'kiro-only') {
     toolFilter = toolFilter === 'kiro' ? null : 'kiro';
     currentView = 'sessions';
+  } else if (view === 'copilot-chat-only') {
+    toolFilter = toolFilter === 'copilot-chat' ? null : 'copilot-chat';
+    currentView = 'sessions';
   } else if (view === 'opencode-only') {
     toolFilter = toolFilter === 'opencode' ? null : 'opencode';
     currentView = 'sessions';
-  } else if (view === 'copilot-only') {
-    toolFilter = toolFilter === 'copilot' ? null : 'copilot';
+  } else if (view === 'kilo-only') {
+    toolFilter = toolFilter === 'kilo' ? null : 'kilo';
     currentView = 'sessions';
   } else {
     toolFilter = null;
     currentView = view;
   }
+
+  // Clear project drill-down filter on any sidebar navigation
+  gitProjectFilter = null;
 
   // Update sidebar active state
   document.querySelectorAll('.sidebar-item').forEach(function(el) {

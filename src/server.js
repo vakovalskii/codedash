@@ -2,9 +2,9 @@
 const http = require('http');
 const https = require('https');
 const { URL } = require('url');
-const { exec, execFile } = require('child_process');
+const { exec, execFile, execFileSync } = require('child_process');
 const { loadSessions, loadSessionDetail, deleteSession, getGitCommits, exportSessionMarkdown, getSessionPreview, searchFullText, getActiveSessions, getSessionReplay, getCostAnalytics, computeSessionCost, getProjectGitInfo, getLeaderboardStats } = require('./data');
-const { detectTerminals, openInTerminal, focusTerminalByPid } = require('./terminals');
+const { detectTerminals, openInTerminal, focusTerminalByPid, isWSL } = require('./terminals');
 const { convertSession } = require('./convert');
 const { generateHandoff } = require('./handoff');
 const { CHANGELOG } = require('./changelog');
@@ -110,6 +110,9 @@ function startServer(host, port, openBrowser = true) {
       readBody(req, body => {
         try {
           const { sessionId, tool, flags, project, terminal } = JSON.parse(body);
+          if (!/^[A-Za-z0-9._-]{1,128}$/.test(String(sessionId || ''))) {
+            throw new Error('invalid sessionId');
+          }
           log('LAUNCH', `session=${sessionId} tool=${tool || 'claude'} terminal=${terminal || 'default'} project=${project || '(none)'} flags=${(flags || []).join(',') || '(none)'}`);
           openInTerminal(sessionId, tool || 'claude', flags || [], project || '', terminal || '');
           log('LAUNCH', 'ok');
@@ -198,11 +201,12 @@ function startServer(host, port, openBrowser = true) {
             target = require('path').dirname(target);
           }
           log('IDE', `ide=${ide} project=${project} target=${target}`);
-          if (ide === 'cursor') {
+if (ide === 'cursor') {
             exec(`cursor "${target || '.'}"`);
           } else if (ide === 'code' || ide === 'vscode') {
             exec(`code "${target || '.'}"`);
           }
+          openIDE(ide, target || '.');
           json(res, { ok: true });
         } catch (e) {
           json(res, { ok: false, error: e.message }, 400);
@@ -244,9 +248,15 @@ function startServer(host, port, openBrowser = true) {
     else if (req.method === 'POST' && pathname === '/api/focus') {
       readBody(req, body => {
         try {
-          const { pid } = JSON.parse(body);
-          log('FOCUS', `pid=${pid}`);
-          const result = focusTerminalByPid(pid);
+          const { pid, sessionId } = JSON.parse(body);
+          if (!Number.isInteger(pid) || pid <= 0) {
+            throw new Error('invalid pid');
+          }
+          if (sessionId && !/^[A-Za-z0-9._-]{1,128}$/.test(String(sessionId))) {
+            throw new Error('invalid sessionId');
+          }
+          log('FOCUS', `pid=${pid} sessionId=${sessionId || '(none)'}`);
+          const result = focusTerminalByPid(pid, sessionId);
           log('FOCUS', `result: terminal=${result.terminal || 'none'} ok=${result.ok}`);
           json(res, result);
         } catch (e) {
@@ -419,6 +429,30 @@ function startServer(host, port, openBrowser = true) {
       });
     }
 
+    // ── Self-update ─────────────────────────
+    else if (req.method === 'POST' && pathname === '/api/update') {
+      const pkg = require('../package.json');
+      log('UPDATE', `Starting self-update from v${pkg.version}...`);
+      json(res, { ok: true, message: 'Updating... Page will reload.' });
+      // Run update in background after response is sent
+      setTimeout(() => {
+        const { execSync } = require('child_process');
+        try {
+          execSync('npm i -g codbash-app@latest', { stdio: 'inherit', timeout: 60000 });
+          log('UPDATE', 'Updated. Restarting...');
+          // Restart the process
+          process.on('exit', () => {
+            require('child_process').spawn(process.argv[0], process.argv.slice(1), {
+              detached: true, stdio: 'inherit'
+            }).unref();
+          });
+          process.exit(0);
+        } catch (e) {
+          log('ERROR', `Update failed: ${e.message}`);
+        }
+      }, 500);
+    }
+
     // ── 404 ─────────────────────────────────
     else {
       res.writeHead(404);
@@ -429,7 +463,7 @@ function startServer(host, port, openBrowser = true) {
   const bindAddr = host === 'localhost' ? DEFAULT_HOST : host;
   server.listen(port, bindAddr, () => {
     console.log('');
-    console.log('  \x1b[36m\x1b[1mcodedash\x1b[0m — Claude & Codex Sessions Dashboard');
+    console.log('  \x1b[36m\x1b[1mcodbash\x1b[0m — Claude & Codex Sessions Dashboard');
     console.log(`  \x1b[2mbind ${bindAddr}:${port}\x1b[0m`);
     console.log(`  \x1b[2m${browserUrl}\x1b[0m`);
     if (host === '0.0.0.0' || host === '::' || host === '[::]') {
@@ -441,8 +475,14 @@ function startServer(host, port, openBrowser = true) {
     if (openBrowser) {
       if (process.platform === 'darwin') {
         execFile('open', [browserUrl]);
-      } else if (process.platform === 'linux') {
+      } else if (process.platform === 'linux' && !isWSL()) {
         execFile('xdg-open', [browserUrl]);
+      } else if (isWSL()) {
+        // In WSL the browser lives on the Windows host. xdg-open inside WSL
+        // typically fails or opens a Linux-side browser that nobody is looking
+        // at. Print the URL and let the user click it from Windows.
+        console.log('  \x1b[33mWSL detected — open this URL in your Windows browser:\x1b[0m');
+        console.log(`  \x1b[36m${browserUrl}\x1b[0m`);
       }
     }
 
@@ -451,6 +491,57 @@ function startServer(host, port, openBrowser = true) {
     setTimeout(autoSync, 15000); // first sync 15s after start
     setInterval(autoSync, 300000); // then every 5 min
   });
+}
+
+function openIDE(ide, target) {
+  const bin = ide === 'cursor' ? 'cursor' : 'code';
+  const winBin = bin + '.exe';
+  const runLog = (err) => { if (err) log('ERROR', `${ide} open failed: ${err.message}`); };
+
+  if (!isWSL()) {
+    // execFile with argv — a project path containing quotes or spaces must not
+    // get re-parsed by /bin/sh.
+    execFile(bin, [target], runLog);
+    return;
+  }
+
+  // WSL: branch on whether the project lives on the Windows side or inside WSL.
+  const isWinSide = /^[A-Za-z]:[\\/]/.test(target) || target.includes('\\') || /^\/mnt\/[a-z]\//i.test(target);
+
+  if (isWinSide) {
+    // Translate /mnt/c/... back to C:\... and open natively on Windows.
+    let winTarget = target;
+    const m = target.match(/^\/mnt\/([a-z])\/(.*)$/i);
+    if (m) winTarget = m[1].toUpperCase() + ':\\' + m[2].replace(/\//g, '\\');
+    execFile(winBin, [winTarget], runLog);
+    return;
+  }
+
+  // WSL-side project: prefer the Linux wrapper installed by the Remote-WSL
+  // extension since it handles path translation. Probe via execFileSync('which')
+  // so a missing import would throw loudly instead of being swallowed.
+  let hasWrapper = false;
+  try {
+    execFileSync('which', [bin], { stdio: 'pipe' });
+    hasWrapper = true;
+  } catch (e) {
+    if (e.code !== 1 && !/not found|No such/.test(e.message || '')) {
+      log('WARN', `which ${bin} probe error: ${e.message}`);
+    }
+  }
+
+  if (hasWrapper) {
+    execFile(bin, [target], runLog);
+    return;
+  }
+
+  const distro = process.env.WSL_DISTRO_NAME || '';
+  if (!distro) {
+    log('WARN', `openIDE: no WSL_DISTRO_NAME, cannot build --remote URI for ${winBin}`);
+    execFile(winBin, [target], runLog);
+    return;
+  }
+  execFile(winBin, ['--remote', `wsl+${distro}`, target], runLog);
 }
 
 function sendHeartbeat() {
@@ -501,7 +592,7 @@ function getCloudKey() {
 
 function unlockCloudKey(passphrase) {
   const keyData = loadCloudKey();
-  if (!keyData || !keyData.salt) return { error: 'Run "codedash cloud setup" in terminal first' };
+  if (!keyData || !keyData.salt) return { error: 'Run "codbash cloud setup" in terminal first' };
 
   const salt = Buffer.from(keyData.salt, 'hex');
   const key = deriveKey(passphrase, salt);
@@ -525,102 +616,67 @@ async function handleCloudProxy(req, res, pathname) {
     return json(res, { error: 'Connect GitHub first' }, 401);
   }
 
-  // POST /api/cloud/setup — create passphrase (first time) or re-enter on new device
+  // POST /api/cloud/setup — auto-setup encryption using GitHub token (no passphrase)
   if (req.method === 'POST' && pathname === '/api/cloud/setup') {
-    return new Promise((resolve) => {
-      readBody(req, async (body) => {
-        try {
-          const { passphrase } = JSON.parse(body);
-          if (!passphrase || passphrase.length < 4) {
-            log('CLOUD', 'setup: passphrase too short');
-            json(res, { error: 'Passphrase too short (min 4 chars)' }, 400); return resolve();
-          }
-
-          const existing = loadCloudKey();
-          if (existing && existing.salt) {
-            log('CLOUD', 'setup: local key exists, unlocking...');
-            const result = unlockCloudKey(passphrase);
-            log('CLOUD', `setup unlock: ${result.error ? 'FAIL ' + result.error : 'OK'}`);
-            json(res, result.error ? result : { ok: true }, result.error ? 400 : 200);
-            return resolve();
-          }
-
-          // Check if server has a salt from another device
-          log('CLOUD', 'setup: checking server for existing salt...');
-          const verifyRes = await cloudApiRequest('POST', '/api/auth/verify', profile.token);
-          const serverSalt = verifyRes.status === 200 ? verifyRes.data?.user?.encryption_salt : null;
-
-          let salt;
-          if (serverSalt) {
-            log('CLOUD', 'setup: using salt from another device');
-            salt = Buffer.from(serverSalt, 'hex');
-          } else {
-            log('CLOUD', 'setup: first device, generating new salt');
-            salt = crypto.randomBytes(16);
-            await cloudApiRequest('PUT', '/api/auth/salt', profile.token, JSON.stringify({ salt: salt.toString('hex') }));
-          }
-
-          const key = deriveKey(passphrase, salt);
-          const verifier = encrypt(Buffer.from('codedash-verify'), key);
-          saveCloudKey({ salt: salt.toString('hex'), verifier: verifier.toString('hex') });
-
-          _cachedCloudKey = key;
-          log('CLOUD', `setup: OK (new=${!serverSalt})`);
-          json(res, { ok: true, isNew: !serverSalt });
-          resolve();
-        } catch (e) {
-          log('ERROR', `cloud setup: ${e.message}`);
-          json(res, { error: e.message }, 500); resolve();
+    return new Promise(async (resolve) => {
+      try {
+        if (!profile || !profile.token) {
+          json(res, { error: 'Connect GitHub first' }, 400); return resolve();
         }
-      });
+        const passphrase = profile.token;
+        const existing = loadCloudKey();
+
+        if (existing && existing.salt) {
+          // Already configured — auto-unlock
+          const salt = Buffer.from(existing.salt, 'hex');
+          _cachedCloudKey = deriveKey(passphrase, salt);
+          log('CLOUD', 'setup: auto-unlocked with GitHub token');
+          json(res, { ok: true }); return resolve();
+        }
+
+        // Check server for salt from another device
+        const verifyRes = await cloudApiRequest('POST', '/api/auth/verify', profile.token);
+        const serverSalt = verifyRes.status === 200 ? verifyRes.data?.user?.encryption_salt : null;
+
+        let salt;
+        if (serverSalt) {
+          log('CLOUD', 'setup: using salt from another device');
+          salt = Buffer.from(serverSalt, 'hex');
+        } else {
+          log('CLOUD', 'setup: first device, generating salt');
+          salt = crypto.randomBytes(16);
+          await cloudApiRequest('PUT', '/api/auth/salt', profile.token, JSON.stringify({ salt: salt.toString('hex') }));
+        }
+
+        const key = deriveKey(passphrase, salt);
+        const verifier = encrypt(Buffer.from('codedash-verify'), key);
+        saveCloudKey({ salt: salt.toString('hex'), verifier: verifier.toString('hex') });
+        _cachedCloudKey = key;
+        log('CLOUD', 'setup: OK (auto, GitHub token)');
+        json(res, { ok: true }); resolve();
+      } catch (e) {
+        log('ERROR', `cloud setup: ${e.message}`);
+        json(res, { error: e.message }, 500); resolve();
+      }
     });
   }
 
-  // POST /api/cloud/lock — clear cached key
-  if (req.method === 'POST' && pathname === '/api/cloud/lock') {
-    _cachedCloudKey = null;
-    log('CLOUD', 'locked (key cleared)');
-    json(res, { ok: true });
-    return;
-  }
-
-  // POST /api/cloud/unlock — cache encryption key from passphrase
-  if (req.method === 'POST' && pathname === '/api/cloud/unlock') {
-    return new Promise((resolve) => {
-      readBody(req, (body) => {
-        try {
-          const { passphrase } = JSON.parse(body);
-          if (!passphrase) { json(res, { error: 'passphrase required' }, 400); return resolve(); }
-          const result = unlockCloudKey(passphrase);
-          log('CLOUD', `unlock: ${result.error ? 'FAIL ' + result.error : 'OK'}`);
-          if (result.error) { json(res, result, 400); return resolve(); }
-          json(res, { ok: true });
-          resolve();
-        } catch (e) {
-          log('ERROR', `cloud unlock: ${e.message}`);
-          json(res, { error: e.message }, 500); resolve();
-        }
-      });
-    });
-  }
-
-  // GET /api/cloud/locked — check if key is cached
+  // GET /api/cloud/locked — auto-unlock if GitHub connected
   if (req.method === 'GET' && pathname === '/api/cloud/locked') {
     const keyData = loadCloudKey();
     const localConfigured = !!(keyData && keyData.salt);
 
-    // Also check if server has a salt (another device set it up)
-    let serverHasSalt = false;
-    if (!localConfigured) {
+    // Auto-unlock with GitHub token if configured
+    if (localConfigured && !_cachedCloudKey && profile && profile.token) {
       try {
-        const verifyRes = await cloudApiRequest('POST', '/api/auth/verify', profile.token);
-        serverHasSalt = !!(verifyRes.status === 200 && verifyRes.data?.user?.encryption_salt);
+        const salt = Buffer.from(keyData.salt, 'hex');
+        _cachedCloudKey = deriveKey(profile.token, salt);
+        log('CLOUD', 'auto-unlocked with GitHub token');
       } catch {}
     }
 
     json(res, {
       configured: localConfigured,
-      serverHasSalt: serverHasSalt,
       unlocked: !!_cachedCloudKey,
     });
     return;
@@ -817,7 +873,7 @@ function githubRequest(hostname, reqPath, method, body) {
     const bodyStr = typeof body === 'string' ? body : (body ? JSON.stringify(body) : '');
     const options = {
       hostname, path: reqPath, method: method || 'POST',
-      headers: { 'Accept': 'application/json', 'Content-Type': 'application/json', 'User-Agent': 'codedash' },
+      headers: { 'Accept': 'application/json', 'Content-Type': 'application/json', 'User-Agent': 'codbash' },
       timeout: 15000,
     };
     if (bodyStr) options.headers['Content-Length'] = Buffer.byteLength(bodyStr);
@@ -853,7 +909,7 @@ async function githubPollToken(deviceCode) {
   // Fetch user profile with token
   const user = await new Promise((resolve, reject) => {
     const req = https.request({ hostname: 'api.github.com', path: '/user', method: 'GET',
-      headers: { 'Authorization': `Bearer ${data.access_token}`, 'Accept': 'application/json', 'User-Agent': 'codedash' },
+      headers: { 'Authorization': `Bearer ${data.access_token}`, 'Accept': 'application/json', 'User-Agent': 'codbash' },
       timeout: 10000,
     }, (res) => { let d = ''; res.on('data', c => d += c); res.on('end', () => { try { resolve(JSON.parse(d)); } catch { reject(new Error('parse error')); } }); });
     req.on('error', reject);

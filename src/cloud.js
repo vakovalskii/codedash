@@ -78,7 +78,7 @@ function cloudRequest(method, reqPath, token, body, headers) {
       path: url.pathname + url.search,
       method,
       headers: {
-        'User-Agent': 'codedash',
+        'User-Agent': 'codbash',
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
         ...headers,
       },
@@ -113,6 +113,60 @@ function cloudRequest(method, reqPath, token, body, headers) {
   });
 }
 
+// ── Cross-machine project identity ───────────
+
+function normalizeGitRemote(url) {
+  if (!url || typeof url !== 'string') return '';
+  let s = url.trim();
+  if (!s) return '';
+  s = s.replace(/^(https?:\/\/)[^@\/]*@/, '$1');
+  s = s.replace(/^git@/, '');
+  s = s.replace(/^ssh:\/\/(?:[^@\/]*@)?/, '');
+  s = s.replace(/^https?:\/\//, '');
+  s = s.replace(/^git:\/\//, '');
+  s = s.replace(/:/, '/');
+  s = s.replace(/\/+$/, '').replace(/\.git$/i, '').replace(/\/+$/, '');
+  return s.toLowerCase();
+}
+
+function slugifyRemoteForDir(remote) {
+  const s = String(remote || '').replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  return s || 'unknown';
+}
+
+let _remoteProjectCache = null;
+let _remoteProjectCacheTs = 0;
+
+function findLocalProjectByRemote(gitRemote) {
+  if (!gitRemote) return '';
+  const now = Date.now();
+  if (_remoteProjectCache && (now - _remoteProjectCacheTs) < 30000) {
+    return _remoteProjectCache[gitRemote] || '';
+  }
+  _remoteProjectCache = {};
+  _remoteProjectCacheTs = now;
+  try {
+    const { loadSessions, getProjectGitInfo } = require('./data');
+    const sessions = loadSessions();
+    const counts = {};
+    for (const s of sessions) {
+      if (!s || !s.project) continue;
+      let info = null;
+      try { info = getProjectGitInfo(s.project); } catch {}
+      if (!info || !info.remoteUrl) continue;
+      const key = normalizeGitRemote(info.remoteUrl);
+      if (!key) continue;
+      if (!counts[key]) counts[key] = {};
+      counts[key][s.project] = (counts[key][s.project] || 0) + 1;
+    }
+    for (const key of Object.keys(counts)) {
+      const paths = Object.entries(counts[key]).sort((a, b) => b[1] - a[1]);
+      _remoteProjectCache[key] = paths[0][0];
+    }
+  } catch {}
+  return _remoteProjectCache[gitRemote] || '';
+}
+
 // ── Session Serialization ────────────────────
 
 function serializeSession(sessionId, sessions) {
@@ -145,11 +199,25 @@ function serializeSession(sessionId, sessions) {
     rawMessages = detail.messages || [];
   }
 
+  // Capture git identity for cross-machine project remap on pull
+  let gitRemote = '';
+  let gitRoot = '';
+  try {
+    const { getProjectGitInfo } = require('./data');
+    const info = getProjectGitInfo(session.project);
+    if (info) {
+      gitRoot = info.gitRoot || '';
+      gitRemote = normalizeGitRemote(info.remoteUrl || '');
+    }
+  } catch {}
+
   const canonical = {
-    version: 1,
+    version: 2,
     agent: session.tool,
     sessionId: sessionId,
     project: session.project || '',
+    gitRemote: gitRemote,
+    gitRoot: gitRoot,
     projectShort: session.project_short || '',
     sessionName: session.session_name || '',
     firstMessage: session.first_message || '',
@@ -183,8 +251,23 @@ function deserializeSession(canonical) {
   const sid = canonical.sessionId;
 
   if (agent === 'claude') {
-    // Write to ~/.claude/projects/{key}/{sid}.jsonl
-    const projectKey = (canonical.project || 'unknown').replace(/[^a-zA-Z0-9-]/g, '-');
+    // Try to remap source-machine path to a local project with matching git remote
+    const remapped = canonical.gitRemote ? findLocalProjectByRemote(canonical.gitRemote) : '';
+    let projectKey;
+    let historyProject;
+    let remapNote = '';
+    if (remapped) {
+      projectKey = remapped.replace(/[\/\.]/g, '-');
+      historyProject = remapped;
+      remapNote = `Remapped to local project ${remapped} via git remote ${canonical.gitRemote}`;
+    } else if (canonical.gitRemote) {
+      projectKey = '-cloud-import-' + slugifyRemoteForDir(canonical.gitRemote);
+      historyProject = projectKey;
+      remapNote = `No local checkout of ${canonical.gitRemote} found — imported to neutral bucket ${projectKey}`;
+    } else {
+      projectKey = (canonical.project || 'unknown').replace(/[^a-zA-Z0-9-]/g, '-');
+      historyProject = projectKey;
+    }
     const dir = path.join(PROJECTS_DIR, projectKey);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     const file = path.join(dir, `${sid}.jsonl`);
@@ -197,12 +280,12 @@ function deserializeSession(canonical) {
     const historyFile = path.join(CLAUDE_DIR, 'history.jsonl');
     const historyEntry = {
       sessionId: sid,
-      project: projectKey,
+      project: historyProject,
       timestamp: new Date(canonical.lastTs || Date.now()).toISOString(),
       summary: canonical.firstMessage?.slice(0, 200) || '',
     };
     fs.appendFileSync(historyFile, JSON.stringify(historyEntry) + '\n');
-    return { ok: true, file };
+    return { ok: true, file, note: remapNote || undefined };
   }
 
   if (agent === 'codex') {
@@ -228,7 +311,18 @@ function deserializeSession(canonical) {
   if (agent === 'cursor') {
     // Write to ~/.cursor/projects/{key}/agent-transcripts/{sid}/{sid}.jsonl
     const cursorProjects = path.join(os.homedir(), '.cursor', 'projects');
-    const projectKey = (canonical.project || 'unknown').replace(/[^a-zA-Z0-9-]/g, '-');
+    const remapped = canonical.gitRemote ? findLocalProjectByRemote(canonical.gitRemote) : '';
+    let projectKey;
+    let remapNote = '';
+    if (remapped) {
+      projectKey = remapped.replace(/[\/\.]/g, '-');
+      remapNote = `Remapped to local project ${remapped} via git remote ${canonical.gitRemote}`;
+    } else if (canonical.gitRemote) {
+      projectKey = '-cloud-import-' + slugifyRemoteForDir(canonical.gitRemote);
+      remapNote = `No local checkout of ${canonical.gitRemote} found — imported to neutral bucket ${projectKey}`;
+    } else {
+      projectKey = (canonical.project || 'unknown').replace(/[^a-zA-Z0-9-]/g, '-');
+    }
     const dir = path.join(cursorProjects, projectKey, 'agent-transcripts', sid);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     const file = path.join(dir, `${sid}.jsonl`);
@@ -236,7 +330,7 @@ function deserializeSession(canonical) {
 
     const lines = canonical.messages.map(m => JSON.stringify(m)).join('\n') + '\n';
     fs.writeFileSync(file, lines);
-    return { ok: true, file };
+    return { ok: true, file, note: remapNote || undefined };
   }
 
   // OpenCode and Kiro — store as JSONL in ~/.codedash/cloud-imports/
@@ -253,7 +347,7 @@ function deserializeSession(canonical) {
 async function ensureAuth() {
   const profile = loadProfile();
   if (!profile) {
-    console.error('\n  Not connected to GitHub. Run: codedash run → connect in dashboard\n');
+    console.error('\n  Not connected to GitHub. Run: codbash run → connect in dashboard\n');
     process.exit(1);
   }
 
@@ -266,11 +360,16 @@ async function ensureAuth() {
 }
 
 async function ensureEncryptionKey(user) {
+  const profile = loadProfile();
+  if (!profile || !profile.token) throw new Error('GitHub not connected');
+
+  // Use GitHub token as passphrase — no manual input needed
+  // Same token on both devices (user logs in with same GitHub account)
+  const passphrase = profile.token;
+
   let keyData = loadCloudKey();
 
   if (keyData && keyData.salt) {
-    // Prompt for passphrase (read from stdin)
-    const passphrase = await promptPassphrase('Enter cloud passphrase: ');
     const salt = Buffer.from(keyData.salt, 'hex');
     const key = deriveKey(passphrase, salt);
 
@@ -280,33 +379,23 @@ async function ensureEncryptionKey(user) {
       if (dec.toString() === 'codedash-verify') return key;
     } catch {}
 
-    console.error('  Wrong passphrase.\n');
-    process.exit(1);
+    // Token changed (re-auth) — re-derive with existing salt
+    const newKey = deriveKey(passphrase, salt);
+    const verifier = encrypt(Buffer.from('codedash-verify'), newKey);
+    saveCloudKey({ salt: salt.toString('hex'), verifier: verifier.toString('hex') });
+    return newKey;
   }
 
-  // First time setup
-  console.log('\n  Cloud Encryption Setup');
-  console.log('  Choose a passphrase to encrypt your sessions.');
-  console.log('  You will need this same passphrase on other devices.\n');
-
-  const passphrase = await promptPassphrase('Create cloud passphrase: ');
-  if (passphrase.length < 4) {
-    console.error('  Passphrase too short (min 4 chars).\n');
-    process.exit(1);
-  }
-
+  // First time — auto setup with GitHub token
   const salt = crypto.randomBytes(16);
   const key = deriveKey(passphrase, salt);
   const verifier = encrypt(Buffer.from('codedash-verify'), key);
 
-  // Save locally
   saveCloudKey({ salt: salt.toString('hex'), verifier: verifier.toString('hex') });
 
   // Sync salt to server
-  const profile = loadProfile();
   await cloudRequest('PUT', '/api/auth/salt', profile.token, JSON.stringify({ salt: salt.toString('hex') }));
 
-  console.log('  Encryption configured.\n');
   return key;
 }
 
@@ -345,17 +434,17 @@ async function cloudCLI(args) {
 
   if (!action || action === 'help') {
     console.log(`
-  \x1b[36m\x1b[1mcodedash cloud\x1b[0m — Cloud Session Sync
+  \x1b[36m\x1b[1mcodbash cloud\x1b[0m — Cloud Session Sync
 
   \x1b[1mCommands:\x1b[0m
-    codedash cloud setup              Set encryption passphrase
-    codedash cloud push <id>          Upload session to cloud
-    codedash cloud push --all         Upload all sessions
-    codedash cloud pull <id>          Download session from cloud
-    codedash cloud pull --all         Download all new sessions
-    codedash cloud list               List cloud sessions
-    codedash cloud delete <id>        Delete cloud session
-    codedash cloud status             Show account stats
+    codbash cloud setup              Set encryption passphrase
+    codbash cloud push <id>          Upload session to cloud
+    codbash cloud push --all         Upload all sessions
+    codbash cloud pull <id>          Download session from cloud
+    codbash cloud pull --all         Download all new sessions
+    codbash cloud list               List cloud sessions
+    codbash cloud delete <id>        Delete cloud session
+    codbash cloud status             Show account stats
 `);
     return;
   }
@@ -406,7 +495,7 @@ async function cloudCLI(args) {
     }
 
     if (!target) {
-      console.error('  Usage: codedash cloud push <session-id> or --all\n');
+      console.error('  Usage: codbash cloud push <session-id> or --all\n');
       process.exit(1);
     }
 
@@ -447,7 +536,7 @@ async function cloudCLI(args) {
     }
 
     if (!target) {
-      console.error('  Usage: codedash cloud pull <session-id> or --all\n');
+      console.error('  Usage: codbash cloud pull <session-id> or --all\n');
       process.exit(1);
     }
 
@@ -467,7 +556,7 @@ async function cloudCLI(args) {
     const { sessions, total } = res.data;
     console.log(`\n  Cloud Sessions (${total} total)\n`);
     if (sessions.length === 0) {
-      console.log('  No sessions in cloud yet. Use: codedash cloud push <id>\n');
+      console.log('  No sessions in cloud yet. Use: codbash cloud push <id>\n');
       return;
     }
 
@@ -482,7 +571,7 @@ async function cloudCLI(args) {
 
   if (action === 'delete') {
     const target = args[1];
-    if (!target) { console.error('  Usage: codedash cloud delete <session-id>\n'); return; }
+    if (!target) { console.error('  Usage: codbash cloud delete <session-id>\n'); return; }
     const { profile } = await ensureAuth();
     const res = await cloudRequest('DELETE', `/api/sessions/${encodeURIComponent(target)}`, profile.token);
     if (res.status === 200) console.log(`  Deleted: ${target}\n`);
@@ -505,7 +594,7 @@ async function cloudCLI(args) {
     return;
   }
 
-  console.error(`  Unknown command: cloud ${action}. Run: codedash cloud help\n`);
+  console.error(`  Unknown command: cloud ${action}. Run: codbash cloud help\n`);
 }
 
 // ── Push / Pull helpers ──────────────────────
@@ -592,4 +681,8 @@ module.exports = {
   cloudRequest,
   getCloudAPI,
   CLOUD_API,
+  __test: {
+    normalizeGitRemote,
+    slugifyRemoteForDir,
+  },
 };

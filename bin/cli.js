@@ -1,11 +1,18 @@
 #!/usr/bin/env node
 
-// Node.js version check — codedash requires Node >= 18
+// Node.js version check — codbash requires Node >= 18
 var nodeVersion = parseInt(process.versions.node.split('.')[0], 10);
 if (nodeVersion < 18) {
-  console.error('\n  codedash requires Node.js >= 18 (you have ' + process.version + ')');
+  console.error('\n  codbash requires Node.js >= 18 (you have ' + process.version + ')');
   console.error('  Install latest: https://nodejs.org/\n');
   process.exit(1);
+}
+
+// One-time migration notice for old binary name
+if (process.argv[1] && process.argv[1].includes('codedash') && !process.argv[1].includes('codbash')) {
+  console.log('\n  \x1b[33mNotice:\x1b[0m codedash-app has been renamed to \x1b[1mcodbash\x1b[0m.');
+  console.log('  Install the new package: \x1b[2mnpm i -g codbash-app\x1b[0m');
+  console.log('  The old binary still works but will be removed in a future version.\n');
 }
 
 const { loadSessions, searchFullText, getSessionPreview, computeSessionCost } = require('../src/data');
@@ -19,6 +26,36 @@ const DEFAULT_PORT = 3847;
 const DEFAULT_HOST = 'localhost';
 const args = process.argv.slice(2);
 const command = args[0] || 'help';
+
+const TOOL_LABELS = {
+  claude: { label: 'claude', ansi: '\x1b[34mclaude\x1b[0m' },
+  'claude-ext': { label: 'claude-ext', ansi: '\x1b[34mclaude-ext\x1b[0m' },
+  codex: { label: 'codex', ansi: '\x1b[36mcodex\x1b[0m' },
+  qwen: { label: 'qwen', ansi: '\x1b[33mqwen\x1b[0m' },
+  cursor: { label: 'cursor', ansi: '\x1b[35mcursor\x1b[0m' },
+  opencode: { label: 'opencode', ansi: '\x1b[95mopencode\x1b[0m' },
+  kiro: { label: 'kiro', ansi: '\x1b[91mkiro\x1b[0m' },
+};
+
+function getToolDisplay(tool) {
+  return TOOL_LABELS[tool] || { label: tool || 'unknown', ansi: tool || 'unknown' };
+}
+
+function getResumeCommand(tool, sessionId) {
+  if (tool === 'codex') return `codex resume ${sessionId}`;
+  if (tool === 'qwen') return `qwen -r ${sessionId}`;
+  if (tool === 'cursor') return 'cursor';
+  return `claude --resume ${sessionId}`;
+}
+
+const STATS_TOOL_ROWS = [
+  { label: 'Claude sessions', match: (s) => s.tool === 'claude' || s.tool === 'claude-ext' },
+  { label: 'Codex sessions', match: (s) => s.tool === 'codex' },
+  { label: 'Qwen sessions', match: (s) => s.tool === 'qwen' },
+  { label: 'Cursor sessions', match: (s) => s.tool === 'cursor' },
+  { label: 'OpenCode sessions', match: (s) => s.tool === 'opencode' },
+  { label: 'Kiro sessions', match: (s) => s.tool === 'kiro' },
+];
 
 switch (command) {
   case 'run':
@@ -38,12 +75,12 @@ switch (command) {
     const limit = parseInt(args[1]) || 20;
     console.log(`\n  \x1b[36m\x1b[1m${sessions.length} sessions\x1b[0m across ${new Set(sessions.map(s => s.project)).size} projects\n`);
     for (const s of sessions.slice(0, limit)) {
-      const tool = s.tool === 'codex' ? '\x1b[36mcodex\x1b[0m' : '\x1b[34mclaude\x1b[0m';
+      const tool = getToolDisplay(s.tool).ansi.padEnd(18);
       const msg = (s.session_name || s.first_message || '').slice(0, 50).padEnd(50);
       const proj = s.project_short || '';
       console.log(`  ${tool}  ${s.id.slice(0, 12)}  ${s.last_time}  ${msg}  \x1b[2m${proj}\x1b[0m`);
     }
-    if (sessions.length > limit) console.log(`\n  \x1b[2m... and ${sessions.length - limit} more (codedash list ${limit + 20})\x1b[0m`);
+    if (sessions.length > limit) console.log(`\n  \x1b[2m... and ${sessions.length - limit} more (codbash list ${limit + 20})\x1b[0m`);
     console.log('');
     break;
   }
@@ -60,8 +97,9 @@ switch (command) {
     console.log(`\n  \x1b[36m\x1b[1mSession Stats\x1b[0m\n`);
     console.log(`  Total sessions:  ${sessions.length}`);
     console.log(`  Total projects:  ${Object.keys(projects).length}`);
-    console.log(`  Claude sessions: ${sessions.filter(s => s.tool === 'claude').length}`);
-    console.log(`  Codex sessions:  ${sessions.filter(s => s.tool === 'codex').length}`);
+    for (const row of STATS_TOOL_ROWS) {
+      console.log(`  ${row.label.padEnd(18)} ${sessions.filter(row.match).length}`);
+    }
     console.log(`\n  \x1b[1mTop projects:\x1b[0m`);
     const sorted = Object.entries(projects).sort((a, b) => b[1].count - a[1].count).slice(0, 10);
     for (const [name, info] of sorted) {
@@ -75,7 +113,7 @@ switch (command) {
   case 'find': {
     const query = args.slice(1).join(' ');
     if (!query) {
-      console.error('  Usage: codedash search <query>');
+      console.error('  Usage: codbash search <query>');
       process.exit(1);
     }
     const sessions = loadSessions();
@@ -104,7 +142,7 @@ switch (command) {
   case 'show': {
     const sid = args[1];
     if (!sid) {
-      console.error('  Usage: codedash show <session-id>');
+      console.error('  Usage: codbash show <session-id>');
       process.exit(1);
     }
     const allS = loadSessions();
@@ -123,8 +161,12 @@ switch (command) {
     console.log(`  Started: ${session.first_time}`);
     console.log(`  Last:    ${session.last_time}`);
     console.log(`  Msgs:    ${session.messages} inputs, ${session.detail_messages || 0} total`);
-    if (cost.cost > 0) {
-      console.log(`  Cost:    $${cost.cost.toFixed(2)} (${cost.model || 'unknown'})`);
+    if (cost.cost > 0 || cost.unavailable) {
+      if (cost.unavailable) {
+        console.log(`  Cost:    unavailable (${cost.model || 'unknown'})`);
+      } else {
+        console.log(`  Cost:    $${cost.cost.toFixed(2)} (${cost.model || 'unknown'})`);
+      }
       console.log(`  Tokens:  ${(cost.inputTokens/1000).toFixed(0)}K in / ${(cost.outputTokens/1000).toFixed(0)}K out`);
     }
     console.log('');
@@ -139,7 +181,7 @@ switch (command) {
       console.log('');
     }
 
-    console.log(`  Resume: \x1b[2m${session.tool === 'codex' ? 'codex resume' : 'claude --resume'} ${session.id}\x1b[0m`);
+    console.log(`  Resume: \x1b[2m${getResumeCommand(session.tool, session.id)}\x1b[0m`);
     console.log('');
     break;
   }
@@ -156,30 +198,30 @@ switch (command) {
       console.log(`
   \x1b[36m\x1b[1mHandoff session to another agent\x1b[0m
 
-  Usage: codedash handoff <session-id> [target] [options]
+  Usage: codbash handoff <session-id> [target] [options]
 
   Generates a context document for continuing a session in another tool.
 
-  Targets: claude, codex, opencode, any (default)
+  Targets: claude, codex, qwen, opencode, any (default)
   Options:
     --verbosity=minimal|standard|verbose|full
     --out=file.md  (save to file instead of stdout)
 
   Examples:
-    codedash handoff 13ae5748                    Print handoff doc
-    codedash handoff 13ae5748 codex              For Codex specifically
-    codedash handoff 13ae5748 --verbosity=full   Include more context
-    codedash handoff 13ae5748 --out=handoff.md   Save to file
+    codbash handoff 13ae5748                    Print handoff doc
+    codbash handoff 13ae5748 qwen               For Qwen specifically
+    codbash handoff 13ae5748 --verbosity=full   Include more context
+    codbash handoff 13ae5748 --out=handoff.md   Save to file
 
   Quick handoff (latest session):
-    codedash handoff claude codex                Latest Claude → Codex
+    codbash handoff qwen codex                  Latest Qwen → Codex
 `);
       break;
     }
 
     // Check if sid is a tool name (quick handoff)
     let result;
-    if (['claude', 'codex', 'opencode'].includes(sid)) {
+    if (['claude', 'codex', 'qwen', 'opencode'].includes(sid)) {
       result = quickHandoff(sid, target, { verbosity });
     } else {
       const allH = loadSessions();
@@ -210,18 +252,19 @@ switch (command) {
 
   case 'convert': {
     const sid = args[1];
-    const target = args[2]; // 'claude' or 'codex'
+    const target = args[2]; // 'claude' or 'codex' or 'qwen'
     if (!sid || !target) {
       console.log(`
   \x1b[36m\x1b[1mConvert session between agents\x1b[0m
 
-  Usage: codedash convert <session-id> <target-format>
+  Usage: codbash convert <session-id> <target-format>
 
-  Formats: claude, codex
+  Formats: claude, codex, qwen
 
   Examples:
-    codedash convert 019d54ed codex     Convert Claude session to Codex
-    codedash convert 13ae5748 claude    Convert Codex session to Claude
+    codbash convert 019d54ed codex     Convert Claude session to Codex
+    codbash convert 13ae5748 claude    Convert Codex session to Claude
+    codbash convert 13ae5748 qwen      Convert Claude/Codex session to Qwen
 `);
       break;
     }
@@ -249,14 +292,14 @@ switch (command) {
   case 'update':
   case 'upgrade': {
     const { execSync: execU } = require('child_process');
-    console.log('\n  \x1b[36m\x1b[1mUpdating codedash-app...\x1b[0m\n');
+    console.log('\n  \x1b[36m\x1b[1mUpdating codbash...\x1b[0m\n');
     try {
-      execU('npm i -g codedash-app@latest', { stdio: 'inherit' });
+      execU('npm i -g codbash-app@latest', { stdio: 'inherit' });
       const newPkg = require('../package.json');
       console.log(`\n  \x1b[32mUpdated to v${newPkg.version}!\x1b[0m`);
-      console.log('  Run \x1b[2mcodedash restart\x1b[0m to apply.\n');
+      console.log('  Run \x1b[2mcodbash restart\x1b[0m to apply.\n');
     } catch (e) {
-      console.error('  \x1b[31mUpdate failed.\x1b[0m Try: npm i -g codedash-app@latest\n');
+      console.error('  \x1b[31mUpdate failed.\x1b[0m Try: npm i -g codbash-app@latest\n');
     }
     break;
   }
@@ -267,7 +310,7 @@ switch (command) {
     const port = portArg ? parseInt(portArg.split('=')[1]) : DEFAULT_PORT;
     const hostArg = args.find(a => a.startsWith('--host='));
     const host = hostArg ? hostArg.split('=')[1] : (process.env.CODEDASH_HOST || DEFAULT_HOST);
-    console.log(`\n  Stopping codedash on port ${port}...`);
+    console.log(`\n  Stopping codbash on port ${port}...`);
     try {
       execSync(`lsof -ti:${port} | xargs kill -9 2>/dev/null`, { stdio: 'pipe' });
       console.log('  Stopped.');
@@ -288,15 +331,15 @@ switch (command) {
     const p = pArg ? parseInt(pArg.split('=')[1]) : DEFAULT_PORT;
     try {
       execS(`lsof -ti:${p} | xargs kill -9 2>/dev/null`, { stdio: 'pipe' });
-      console.log(`\n  codedash stopped (port ${p})\n`);
+      console.log(`\n  codbash stopped (port ${p})\n`);
     } catch {
-      console.log(`\n  No codedash running on port ${p}\n`);
+      console.log(`\n  No codbash running on port ${p}\n`);
     }
     break;
   }
 
   case 'export': {
-    const outPath = args[1] || `codedash-export-${new Date().toISOString().slice(0,10)}.tar.gz`;
+    const outPath = args[1] || `codbash-export-${new Date().toISOString().slice(0,10)}.tar.gz`;
     exportArchive(outPath);
     break;
   }
@@ -304,7 +347,7 @@ switch (command) {
   case 'import': {
     const archivePath = args[1];
     if (!archivePath) {
-      console.error('  Usage: codedash import <archive.tar.gz>');
+      console.error('  Usage: codbash import <archive.tar.gz>');
       process.exit(1);
     }
     importArchive(archivePath);
@@ -332,24 +375,24 @@ switch (command) {
   case '--help':
   default:
     console.log(`
-  \x1b[36m\x1b[1mcodedash\x1b[0m — Claude & Codex Sessions Dashboard
+  \x1b[36m\x1b[1mcodbash\x1b[0m — Claude & Codex Sessions Dashboard
 
   \x1b[1mUsage:\x1b[0m
-    codedash run [port] [--no-browser]   Start the dashboard server
-    codedash search <query>              Search across all session messages
-    codedash show <session-id>           Show session details + messages
-    codedash list [limit]                List sessions in terminal
-    codedash stats                       Show session statistics
-    codedash handoff <id> [target]       Generate handoff document
-    codedash convert <id> <format>       Convert session (claude/codex)
-    codedash export [file.tar.gz]        Export all sessions to archive
-    codedash import <file.tar.gz>        Import sessions from archive
-    codedash cloud <command>             Cloud session sync (setup/push/pull/list/status)
-    codedash update                      Update to latest version
-    codedash restart [--port=N]          Restart the server
-    codedash stop [--port=N]             Stop the server
-    codedash help                        Show this help
-    codedash version                     Show version
+    codbash run [port] [--no-browser]   Start the dashboard server
+    codbash search <query>              Search across all session messages
+    codbash show <session-id>           Show session details + messages
+    codbash list [limit]                List sessions in terminal
+    codbash stats                       Show session statistics
+    codbash handoff <id> [target]       Generate handoff document
+    codbash convert <id> <format>       Convert session (claude/codex/qwen)
+    codbash export [file.tar.gz]        Export all sessions to archive
+    codbash import <file.tar.gz>        Import sessions from archive
+    codbash cloud <command>             Cloud session sync (setup/push/pull/list/status)
+    codbash update                      Update to latest version
+    codbash restart [--port=N]          Restart the server
+    codbash stop [--port=N]             Stop the server
+    codbash help                        Show this help
+    codbash version                     Show version
 
   \x1b[1mServer options:\x1b[0m
     --port=N                             Listen on port N (default: ${DEFAULT_PORT})
@@ -360,12 +403,12 @@ switch (command) {
     CODEDASH_HOST                        Bind address (same as --host)
 
   \x1b[1mExamples:\x1b[0m
-    codedash run                         Start on port ${DEFAULT_PORT}
-    codedash run --port=4000             Start on port 4000
-    codedash run --host=0.0.0.0          Listen on all interfaces
-    codedash run --no-browser            Start without opening browser
-    codedash list 50                     Show last 50 sessions
-    codedash ls                          Alias for list
+    codbash run                         Start on port ${DEFAULT_PORT}
+    codbash run --port=4000             Start on port 4000
+    codbash run --host=0.0.0.0          Listen on all interfaces
+    codbash run --no-browser            Start without opening browser
+    codbash list 50                     Show last 50 sessions
+    codbash ls                          Alias for list
 `);
     if (!['help', '-h', '--help'].includes(command)) {
       console.log(`  Unknown command: ${command}\n`);

@@ -1,13 +1,13 @@
-# CodeDash
+# Codbash
 
-Дашборд + CLI для сессий AI-агентов. 5 агентов: Claude Code, Codex, Cursor, OpenCode, Kiro.
+Дашборд + CLI для сессий AI-агентов. 7 агентов: Claude Code, Codex, Cursor, OpenCode, Kiro, Kilo, Copilot Chat.
 
 [English](../README.md) | [Chinese / 中文](README_ZH.md)
 
 ## Быстрый старт
 
 ```bash
-npm i -g codedash-app && codedash run
+npm i -g codbash-app && codbash run
 ```
 
 ## Поддерживаемые агенты
@@ -19,12 +19,13 @@ npm i -g codedash-app && codedash run
 | Cursor | JSONL | LIVE/WAITING | - | Open in Cursor |
 | OpenCode | SQLite | LIVE/WAITING | - | Терминал |
 | Kiro CLI | SQLite | LIVE/WAITING | - | Терминал |
+| Copilot Chat | JSON/JSONL | - | - | - |
 
 ## Возможности
 
 - Grid/List, группировка по проектам, trigram поиск + deep search
 - GitHub-стиль SVG heatmap активности со стриками
-- LIVE/WAITING бейджи для всех 5 агентов, анимированная рамка
+- LIVE/WAITING бейджи для всех агентов, анимированная рамка
 - Session Replay с ползунком, hover превью, раскрытие карточек
 - Аналитика стоимости из реальных usage данных
 - Конвертация сессий Claude <-> Codex, Handoff между агентами
@@ -34,7 +35,7 @@ npm i -g codedash-app && codedash run
 ## CLI
 
 ```bash
-codedash run | search | show | handoff | convert | list | stats | export | import | update | restart | stop
+codbash run | search | show | handoff | convert | list | stats | export | import | update | restart | stop
 ```
 
 ## Требования

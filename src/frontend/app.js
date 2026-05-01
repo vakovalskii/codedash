@@ -1,4 +1,4 @@
-// ── codedash frontend ──────────────────────────────────────────
+// ── codbash frontend ──────────────────────────────────────────
 // Plain browser JS, no modules, no build step.
 
 // ── State ──────────────────────────────────────────────────────
@@ -11,6 +11,7 @@ let layout = localStorage.getItem('codedash-layout') || 'grid'; // 'grid' or 'li
 let groupingMode = normalizeGroupingMode(localStorage.getItem('codedash-grouping-mode'));
 let searchQuery = '';
 let toolFilter = null;  // null, 'claude', 'codex'
+let gitProjectFilter = null; // null or { key, name } — drill-down from Projects view
 let tagFilter = '';
 let dateFrom = '';
 let dateTo = '';
@@ -91,9 +92,45 @@ function getSessionGroupInfo(session) {
   return { key: name, name: name };
 }
 
+function stripRecapSuffix(s) {
+  return (s || '').replace(/\s*\(disable recaps in \/config\)\s*$/, '');
+}
+
 function getSessionDisplayName(session) {
   if (!session) return '';
-  return session.session_name || session.first_message || '';
+  return session.session_name
+    || stripRecapSuffix(session.recap)
+    || session.first_message
+    || '';
+}
+
+var TOOL_META = {
+  claude: { label: 'Claude Code', shortLabel: 'claude', color: '#60a5fa' },
+  'claude-ext': { label: 'Claude Ext', shortLabel: 'claude ext', color: '#60a5fa' },
+  codex: { label: 'Codex', shortLabel: 'codex', color: '#22d3ee' },
+  qwen: { label: 'Qwen Code', shortLabel: 'qwen', color: '#fbbf24' },
+  cursor: { label: 'Cursor', shortLabel: 'cursor', color: '#4a9eff' },
+  opencode: { label: 'OpenCode', shortLabel: 'opencode', color: '#c084fc' },
+  kiro: { label: 'Kiro', shortLabel: 'kiro', color: '#fb923c' },
+  kilo: { label: 'Kilo CLI', shortLabel: 'kilo', color: '#34d399' },
+  'copilot-chat': { label: 'Copilot Chat', shortLabel: 'copilot', color: '#8b6fc0' }
+};
+
+function getToolLabel(tool, shortLabel) {
+  var meta = TOOL_META[tool] || { label: tool || 'unknown', shortLabel: tool || 'unknown' };
+  return shortLabel ? meta.shortLabel : meta.label;
+}
+
+function getResumeCommand(tool, sessionId, project) {
+  if (tool === 'codex') return 'codex resume ' + sessionId;
+  if (tool === 'qwen') return 'qwen -r ' + sessionId;
+  if (tool === 'cursor') return 'cursor ' + (project ? '"' + project + '"' : '.');
+  return 'claude --resume ' + sessionId;
+}
+
+function getConvertTargets(tool) {
+  if (tool !== 'claude' && tool !== 'codex' && tool !== 'qwen') return [];
+  return ['claude', 'codex', 'qwen'].filter(function(target) { return target !== tool; });
 }
 
 // ── Utilities ──────────────────────────────────────────────────
@@ -176,6 +213,11 @@ function estimateCost(fileSize) {
   var tokens = fileSize / 4;
   // Quick card badge estimate (Sonnet 4.6: $3/M in, $15/M out)
   return tokens * 0.3 * (3.0 / 1e6) + tokens * 0.7 * (15.0 / 1e6);
+}
+
+function getEstimatedSessionCost(session) {
+  if (!session || session.tool === 'qwen') return 0;
+  return estimateCost(session.file_size);
 }
 
 // ── Subscription service plans (pricing as of 2025) ─────────────
@@ -440,10 +482,17 @@ function generateAllTitles() {
 
 // ── Data loading ───────────────────────────────────────────────
 
+var _loadSessionsInFlight = false;
+
 async function loadSessions() {
+  if (_loadSessionsInFlight) return;
+  _loadSessionsInFlight = true;
   try {
     var resp = await fetch('/api/sessions');
     allSessions = await resp.json();
+    // Invalidate analytics cache so stale aggregates are not shown
+    _analyticsHtmlCache = null;
+    _analyticsCacheUrl = null;
     applyFilters();
     // Progressive loading: if server is still loading cursor vscdb sessions, auto-refresh
     if (resp.headers.get('X-Loading') === '1') {
@@ -451,6 +500,8 @@ async function loadSessions() {
     }
   } catch (e) {
     document.getElementById('content').innerHTML = '<div class="empty-state">Failed to load sessions. Is the server running?</div>';
+  } finally {
+    _loadSessionsInFlight = false;
   }
 }
 
@@ -601,6 +652,7 @@ function searchScore(query, session) {
   var q = query.toLowerCase();
   var fields = [
     session.session_name || '',
+    session.recap || '',
     session.first_message || '',
     session.project_short || '',
     session.project || '',
@@ -639,6 +691,12 @@ function applyFilters() {
     if (toolFilter) {
       var toolMatch = s.tool === toolFilter || (s.tool === 'claude-ext' && toolFilter === 'claude');
       if (!toolMatch) continue;
+    }
+
+    // Git project drill-down filter (always uses git-root key, independent of groupingMode)
+    if (gitProjectFilter) {
+      var sessionProjectKey = getRepoInfo(s.project, s.git_root).key;
+      if (sessionProjectKey !== gitProjectFilter.key) continue;
     }
 
     // Tag filter
@@ -706,12 +764,12 @@ function renderCard(s, idx) {
   var isSelected = selectedIds.has(s.id);
   var isFocused = focusedIndex === idx;
   var sessionTags = tags[s.id] || [];
-  var cost = estimateCost(s.file_size);
+  var cost = getEstimatedSessionCost(s);
   var costStr = cost > 0 ? '~$' + cost.toFixed(2) : '';
   var projName = getProjectName(s.project);
   var projColor = getProjectColor(projName);
   var toolClass = 'tool-' + s.tool;
-  var toolLabel = s.tool === 'claude-ext' ? 'claude ext' : s.tool;
+  var toolLabel = getToolLabel(s.tool, true);
 
   var classes = 'card';
   if (isSelected) classes += ' selected';
@@ -812,7 +870,7 @@ function renderListCard(s, idx) {
   if (isFocused) classes += ' focused';
 
   var html = '<div class="' + classes + '" data-id="' + s.id + '" onclick="onCardClick(\'' + s.id + '\', event)">';
-  var listToolLabel = s.tool === 'claude-ext' ? 'claude ext' : s.tool;
+  var listToolLabel = getToolLabel(s.tool, true);
   html += '<span class="tool-badge tool-' + s.tool + '">' + escHtml(listToolLabel) + '</span>';
   if (showBadges && s.mcp_servers && s.mcp_servers.length > 0) {
     s.mcp_servers.forEach(function(m) {
@@ -952,13 +1010,43 @@ function render() {
   var stats = document.getElementById('stats');
   if (!content) return;
 
+  // Preserve scroll + collapsed state across re-renders
+  var scrollTop = content.scrollTop;
+  var collapsedGroups = new Set();
+  content.querySelectorAll('.group.collapsed, .git-project-group.collapsed').forEach(function(g) {
+    var header = g.querySelector('.group-header, .git-project-header');
+    if (header) {
+      var name = header.querySelector('.group-name, .git-project-name');
+      if (name) collapsedGroups.add(name.textContent.trim());
+    }
+  });
+
   var sessions = filteredSessions;
 
   // Stats
   if (stats) {
-    stats.textContent = sessions.length + ' sessions' +
-      (toolFilter ? ' (' + toolFilter + ')' : '') +
-      (tagFilter ? ' [' + tagFilter + ']' : '');
+    var statsText = sessions.length + ' sessions';
+    if (toolFilter) statsText += ' (' + toolFilter + ')';
+    if (tagFilter) statsText += ' [' + tagFilter + ']';
+    stats.textContent = statsText;
+  }
+
+  // Project filter breadcrumb
+  var existingBreadcrumb = document.getElementById('gitProjectBreadcrumb');
+  if (gitProjectFilter && currentView === 'sessions') {
+    if (!existingBreadcrumb) {
+      var bc = document.createElement('div');
+      bc.id = 'gitProjectBreadcrumb';
+      bc.className = 'git-project-breadcrumb';
+      var toolbar = document.querySelector('.toolbar');
+      if (toolbar) toolbar.parentNode.insertBefore(bc, toolbar.nextSibling);
+    }
+    document.getElementById('gitProjectBreadcrumb').innerHTML =
+      '<span class="bc-label">Project:</span>' +
+      '<span class="bc-name">' + escHtml(gitProjectFilter.name) + '</span>' +
+      '<button class="bc-clear" onclick="clearGitProjectFilter()" title="Show all projects">&times; Clear filter</button>';
+  } else if (existingBreadcrumb) {
+    existingBreadcrumb.remove();
   }
 
   // Route to view
@@ -1040,6 +1128,20 @@ function render() {
   if (hasMore) {
     content.innerHTML += '<div style="text-align:center;padding:20px"><button class="toolbar-btn" onclick="loadMoreCards()" style="padding:8px 24px">Load more (' + (sessions.length - renderLimit) + ' remaining)</button></div>';
   }
+
+  // Restore scroll + collapsed state
+  if (collapsedGroups.size > 0) {
+    content.querySelectorAll('.group, .git-project-group').forEach(function(g) {
+      var header = g.querySelector('.group-header, .git-project-header');
+      if (header) {
+        var name = header.querySelector('.group-name, .git-project-name');
+        if (name && collapsedGroups.has(name.textContent.trim())) {
+          g.classList.add('collapsed');
+        }
+      }
+    });
+  }
+  if (scrollTop) content.scrollTop = scrollTop;
 }
 
 function loadMoreCards() {
@@ -1061,7 +1163,10 @@ function renderGrouped(container, sessions, renderFn) {
   });
 
   var globalIdx = 0;
-  var html = '';
+  var html = '<div style="display:flex;gap:8px;margin-bottom:12px">';
+  html += '<button class="toolbar-btn" onclick="document.querySelectorAll(\'.group\').forEach(function(g){g.classList.add(\'collapsed\')})">Collapse All</button>';
+  html += '<button class="toolbar-btn" onclick="document.querySelectorAll(\'.group\').forEach(function(g){g.classList.remove(\'collapsed\')})">Expand All</button>';
+  html += '</div>';
   sortedKeys.forEach(function(key) {
     var group = groups[key];
     var color = getProjectColor(key);
@@ -1116,9 +1221,9 @@ function renderTimeline(container, sessions) {
 
 function renderQACard(s, idx) {
   var isStarred = stars.indexOf(s.id) >= 0;
-  var toolLabel = s.tool === 'claude-ext' ? 'claude ext' : s.tool;
+  var toolLabel = getToolLabel(s.tool, true);
   var toolClass = 'tool-' + s.tool;
-  var cost = estimateCost(s.file_size);
+  var cost = getEstimatedSessionCost(s);
   var costStr = cost > 0 ? '~$' + cost.toFixed(2) : '';
   var classes = 'qa-item' + (selectedIds.has(s.id) ? ' selected' : '');
 
@@ -1136,15 +1241,15 @@ function renderQACard(s, idx) {
 }
 
 function renderProjects(container, sessions) {
-  var byGit = {};
+  var byGit = {};   // key → { name, list }
   sessions.forEach(function(s) {
-    var name = getGitProjectName(s.project, s.git_root);
-    if (!byGit[name]) byGit[name] = [];
-    byGit[name].push(s);
+    var info = getRepoInfo(s.project, s.git_root);
+    if (!byGit[info.key]) byGit[info.key] = { name: info.name, list: [] };
+    byGit[info.key].list.push(s);
   });
 
   var sorted = Object.entries(byGit).sort(function(a, b) {
-    return b[1][0].last_ts - a[1][0].last_ts;
+    return b[1].list[0].last_ts - a[1].list[0].last_ts;
   });
 
   if (sorted.length === 0) {
@@ -1153,20 +1258,26 @@ function renderProjects(container, sessions) {
   }
 
   var globalIdx = 0;
-  var html = '<div class="git-projects">';
+  var html = '<div style="display:flex;gap:8px;margin-bottom:12px">';
+  html += '<button class="toolbar-btn" onclick="document.querySelectorAll(\'.git-project-group\').forEach(function(g){g.classList.add(\'collapsed\')})">Collapse All</button>';
+  html += '<button class="toolbar-btn" onclick="document.querySelectorAll(\'.git-project-group\').forEach(function(g){g.classList.remove(\'collapsed\')})">Expand All</button>';
+  html += '</div>';
+  html += '<div class="git-projects">';
   sorted.forEach(function(entry) {
-    var name = entry[0];
-    var list = entry[1].slice().sort(function(a, b) { return b.last_ts - a.last_ts; });
-    var color = getProjectColor(name);
+    var projKey = entry[0];
+    var projName = entry[1].name;
+    var list = entry[1].list.slice().sort(function(a, b) { return b.last_ts - a.last_ts; });
+    var color = getProjectColor(projName);
     var totalMsgs = list.reduce(function(s, e) { return s + (e.messages || 0); }, 0);
-    var totalCost = list.reduce(function(s, e) { return s + estimateCost(e.file_size); }, 0);
+    var totalCost = list.reduce(function(s, e) { return s + getEstimatedSessionCost(e); }, 0);
     var costLabel = totalCost > 0 ? ' · ~$' + totalCost.toFixed(2) : '';
 
     html += '<div class="git-project-group">';
     html += '<div class="git-project-header" onclick="this.parentElement.classList.toggle(\'collapsed\')">';
     html += '<span class="group-dot" style="background:' + color + '"></span>';
-    html += '<span class="git-project-name">' + escHtml(name) + '</span>';
+    html += '<span class="git-project-name">' + escHtml(projName) + '</span>';
     html += '<span class="git-project-stats">' + list.length + ' sessions · ' + totalMsgs + ' msgs' + escHtml(costLabel) + '</span>';
+    html += '<button class="git-project-open-btn" data-proj-key="' + escHtml(projKey) + '" data-proj-name="' + escHtml(projName) + '" onclick="event.stopPropagation();drillIntoGitProject(this.dataset.projKey,this.dataset.projName)" title="Show only this project\'s sessions">Open &rsaquo;</button>';
     html += '<span class="group-chevron">&#9660;</span>';
     html += '</div>';
     html += '<div class="qa-list">';
@@ -1220,6 +1331,7 @@ async function confirmDelete() {
         var remaining = allSessions.filter(function(s) {
           return (s.project || '').toLowerCase().indexOf(searchQuery.toLowerCase()) >= 0 ||
                  (s.session_name || '').toLowerCase().indexOf(searchQuery.toLowerCase()) >= 0 ||
+                 (s.recap || '').toLowerCase().indexOf(searchQuery.toLowerCase()) >= 0 ||
                  (s.first_message || '').toLowerCase().indexOf(searchQuery.toLowerCase()) >= 0;
         });
         if (remaining.length === 0) {
@@ -1266,9 +1378,32 @@ function updateBulkBar() {
   if (selectedIds.size > 0) {
     bar.style.display = 'flex';
     document.getElementById('bulkCount').textContent = selectedIds.size + ' selected';
+
+    // Warn if some selected sessions are hidden by the current filter
+    var visibleIds = new Set((filteredSessions || []).map(function(s) { return s.id; }));
+    var hiddenCount = 0;
+    selectedIds.forEach(function(id) { if (!visibleIds.has(id)) hiddenCount++; });
+    var warning = document.getElementById('bulkHiddenWarning');
+    var deleteBtn = document.getElementById('bulkDeleteBtn');
+    if (hiddenCount > 0) {
+      document.getElementById('bulkHiddenCount').textContent = hiddenCount;
+      if (warning) warning.style.display = 'inline';
+      if (deleteBtn) { deleteBtn.disabled = true; deleteBtn.title = 'Clear or deselect hidden sessions first'; }
+    } else {
+      if (warning) warning.style.display = 'none';
+      if (deleteBtn) { deleteBtn.disabled = false; deleteBtn.title = ''; }
+    }
   } else {
     bar.style.display = 'none';
   }
+}
+
+function clearHiddenSelections(event) {
+  if (event) event.preventDefault();
+  var visibleIds = new Set((filteredSessions || []).map(function(s) { return s.id; }));
+  selectedIds.forEach(function(id) { if (!visibleIds.has(id)) selectedIds.delete(id); });
+  updateBulkBar();
+  render();
 }
 
 function clearSelection() {
@@ -1313,6 +1448,34 @@ function openProject(name) {
   document.querySelector('.search-box').value = name;
   document.querySelectorAll('.sidebar-item').forEach(function(el) {
     el.classList.toggle('active', el.getAttribute('data-view') === 'sessions');
+  });
+  applyFilters();
+}
+
+function drillIntoGitProject(key, name) {
+  gitProjectFilter = { key: key, name: name };
+  currentView = 'sessions';
+  // Reset other filters so they don't silently suppress results
+  searchQuery = '';
+  tagFilter = '';
+  dateFrom = '';
+  dateTo = '';
+  var searchBox = document.querySelector('.search-box');
+  if (searchBox) searchBox.value = '';
+  var tagSel = document.getElementById('tagFilter');
+  if (tagSel) tagSel.value = '';
+  updateDateBtn();
+  document.querySelectorAll('.sidebar-item').forEach(function(el) {
+    el.classList.toggle('active', el.getAttribute('data-view') === 'sessions');
+  });
+  applyFilters();
+}
+
+function clearGitProjectFilter() {
+  gitProjectFilter = null;
+  currentView = 'projects';
+  document.querySelectorAll('.sidebar-item').forEach(function(el) {
+    el.classList.toggle('active', el.getAttribute('data-view') === 'projects');
   });
   applyFilters();
 }
@@ -1459,7 +1622,7 @@ function renderRunningCard(a, s) {
   html += '<div class="running-card-header">';
   html += '<span class="live-badge live-' + a.status + '">' + (a.status === 'waiting' ? 'WAITING' : 'LIVE') + '</span>';
   html += '<span class="running-project" style="color:' + projColor + '">' + escHtml(projName) + '</span>';
-  html += '<span class="running-tool">' + escHtml(a.entrypoint || a.kind || 'claude') + '</span>';
+  html += '<span class="running-tool">' + escHtml(getToolLabel(a.entrypoint || a.kind || 'claude')) + '</span>';
   html += '</div>';
   html += '<div class="running-stats">';
   html += '<div class="running-stat"><span class="running-stat-val">' + a.cpu.toFixed(1) + '%</span><span class="running-stat-label">CPU</span></div>';
@@ -1486,7 +1649,7 @@ function renderDoneCard(s) {
   html += '<div class="running-card-header">';
   html += '<span class="live-badge live-done">DONE</span>';
   html += '<span class="running-project" style="color:' + projColor + '">' + escHtml(projName) + '</span>';
-  html += '<span class="running-tool tool-' + (s.tool || 'claude') + '">' + escHtml(s.tool || 'claude') + '</span>';
+  html += '<span class="running-tool tool-' + (s.tool || 'claude') + '">' + escHtml(getToolLabel(s.tool || 'claude', true)) + '</span>';
   html += '</div>';
   var displayName = getSessionDisplayName(s);
   if (displayName) html += '<div class="running-msg">' + escHtml(displayName.slice(0, 120)) + '</div>';
@@ -1511,7 +1674,7 @@ function renderRunning(container, sessions) {
   }).slice(0, 8);
 
   if (allActiveIds.length === 0 && done.length === 0) {
-    container.innerHTML = '<div class="empty-state">No running sessions detected.<br><span style="font-size:12px;color:var(--text-muted)">Start a Claude Code or Codex session and it will appear here.</span></div>';
+    container.innerHTML = '<div class="empty-state">No running sessions detected.<br><span style="font-size:12px;color:var(--text-muted)">Start a supported agent session and it will appear here.</span></div>';
     return;
   }
 
@@ -1575,7 +1738,7 @@ function focusSession(sessionId) {
   fetch('/api/focus', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ pid: a.pid })
+    body: JSON.stringify({ pid: a.pid, sessionId: sessionId })
   }).then(function(r) { return r.json(); }).then(function(data) {
     if (data.ok) {
       var hint = data.terminal || 'terminal';
@@ -1615,15 +1778,16 @@ function renderSettings(container) {
   // Terminal
   html += '<div class="settings-group">';
   html += '<label class="settings-label">Terminal</label>';
-  html += '<select class="settings-select" onchange="saveTerminalPref(this.value)">';
+  html += '<p style="font-size:12px;color:var(--text-muted);margin:0 0 8px">Binary name or full path (e.g. kitty, /usr/bin/alacritty)</p>';
+  html += '<input type="text" class="settings-select" list="terminal-suggestions" value="' + escHtml(savedTerminal) + '" onchange="saveTerminalPref(this.value)" placeholder="x-terminal-emulator">';
+  html += '<datalist id="terminal-suggestions">';
   if (Array.isArray(availableTerminals)) {
     availableTerminals.forEach(function(t) {
       if (!t.available) return;
-      var sel = t.id === savedTerminal ? ' selected' : '';
-      html += '<option value="' + t.id + '"' + sel + '>' + escHtml(t.name) + '</option>';
+      html += '<option value="' + escHtml(t.id) + '">' + escHtml(t.name) + '</option>';
     });
   }
-  html += '</select>';
+  html += '</datalist>';
   html += '</div>';
 
   // AI Titles
@@ -1655,6 +1819,19 @@ function renderSettings(container) {
   });
   html += '</div>';
   html += '<p style="font-size:12px;color:var(--text-muted);margin:10px 0 0">Applies to grouped session views like All Sessions and Claude Code. Projects always stay repository-based.</p>';
+  html += '</div>';
+
+  // Message Sort Order
+  var savedMsgSort = localStorage.getItem('codedash-msg-sort') || 'asc';
+  html += '<div class="settings-group">';
+  html += '<label class="settings-label">Message Sort Order</label>';
+  html += '<p style="font-size:12px;color:var(--text-muted);margin:0 0 8px">Default order for messages in session drawer</p>';
+  html += '<div class="settings-theme-btns">';
+  [['asc', '&#8593; Oldest first'], ['desc', '&#8595; Newest first']].forEach(function(pair) {
+    var active = savedMsgSort === pair[0] ? ' active' : '';
+    html += '<button class="theme-btn' + active + '" onclick="localStorage.setItem(\'codedash-msg-sort\',\'' + pair[0] + '\');renderSettings(document.getElementById(\'content\'))">' + pair[1] + '</button>';
+  });
+  html += '</div>';
   html += '</div>';
 
   // LLM Configuration
@@ -1752,18 +1929,6 @@ function openInCursor(project) {
   }).catch(function() { showToast('Failed to open Cursor'); });
 }
 
-function openInVSCode(project) {
-  if (!project) { showToast('No project path'); return; }
-  fetch('/api/open-ide', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ide: 'vscode', project: project })
-  }).then(function(r) { return r.json(); }).then(function(data) {
-    if (data.ok) showToast('Opening project in VS Code...');
-    else showToast('Failed: ' + (data.error || 'unknown'));
-  }).catch(function() { showToast('Failed to open VS Code'); });
-}
-
 // ── Handoff ───────────────────────────────────────────────────
 
 function downloadHandoff(sessionId, project) {
@@ -1785,6 +1950,12 @@ var AGENT_INSTALL = {
     alt: 'brew install --cask codex',
     url: 'https://github.com/openai/codex',
   },
+  qwen: {
+    name: 'Qwen Code',
+    cmd: 'npm i -g @qwen-code/qwen-code',
+    alt: null,
+    url: 'https://github.com/QwenLM/qwen-code',
+  },
   kiro: {
     name: 'Kiro CLI',
     cmd: 'curl -fsSL https://cli.kiro.dev/install | bash',
@@ -1797,11 +1968,17 @@ var AGENT_INSTALL = {
     alt: 'npm i -g opencode-ai@latest',
     url: 'https://opencode.ai',
   },
-  copilot: {
-    name: 'GitHub Copilot CLI',
-    cmd: 'curl -fsSL https://gh.io/copilot-install | bash',
-    alt: 'brew install copilot-cli',
-    url: 'https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli',
+  kilo: {
+    name: 'Kilo CLI',
+    cmd: 'npm i -g @kilocode/cli',
+    alt: null,
+    url: 'https://kilo.ai',
+  },
+  'copilot-chat': {
+    name: 'Copilot Chat (VS Code)',
+    cmd: null,
+    alt: null,
+    url: 'https://github.com/features/copilot',
   },
 };
 
@@ -1834,16 +2011,16 @@ function showExportDialog() {
   document.getElementById('confirmTitle').textContent = 'Export / Import Sessions';
   document.getElementById('confirmText').innerHTML =
     '<strong>Export</strong> all sessions to migrate to another PC:<br>' +
-    '<code style="display:block;margin:8px 0;padding:8px;background:var(--bg-card);border-radius:6px;font-size:12px">codedash export</code>' +
+    '<code style="display:block;margin:8px 0;padding:8px;background:var(--bg-card);border-radius:6px;font-size:12px">codbash export</code>' +
     'Creates a tar.gz with all Claude &amp; Codex session data.<br><br>' +
     '<strong>Import</strong> on the new machine:<br>' +
-    '<code style="display:block;margin:8px 0;padding:8px;background:var(--bg-card);border-radius:6px;font-size:12px">codedash import &lt;file.tar.gz&gt;</code>' +
+    '<code style="display:block;margin:8px 0;padding:8px;background:var(--bg-card);border-radius:6px;font-size:12px">codbash import &lt;file.tar.gz&gt;</code>' +
     '<br><em style="color:var(--text-muted);font-size:12px">Don\'t forget to clone your git repos separately.</em>';
   document.getElementById('confirmId').textContent = '';
   document.getElementById('confirmAction').textContent = 'Copy Export Command';
   document.getElementById('confirmAction').className = 'launch-btn btn-primary';
   document.getElementById('confirmAction').onclick = function() {
-    copyText('codedash export', 'Copied: codedash export');
+    copyText('codbash export', 'Copied: codbash export');
     closeConfirm();
   };
   if (overlay) overlay.style.display = 'flex';
@@ -1872,25 +2049,33 @@ async function checkForUpdates() {
       if (badge) {
         badge.textContent = 'v' + data.current + ' → v' + data.latest;
         badge.classList.add('update-available');
-        badge.title = 'Click to copy update command';
-        badge.onclick = function() {
-          copyText('npm i -g codedash-app@latest', 'Copied: npm i -g codedash-app@latest');
-        };
+        badge.title = 'Click to update';
+        badge.onclick = function() { selfUpdate(); };
       }
       var banner = document.getElementById('updateBanner');
       var text = document.getElementById('updateText');
       if (banner && text) {
-        text.textContent = 'v' + data.latest + ' available — run: npm i -g codedash-app@latest';
+        text.innerHTML = '<strong>v' + data.latest + '</strong> available';
         banner.style.display = 'flex';
-        banner.dataset.cmd = 'npm i -g codedash-app@latest';
       }
     }
   } catch {}
 }
 
+async function selfUpdate() {
+  if (!confirm('Update codbash to latest version? The page will reload.')) return;
+  showToast('Updating...');
+  try {
+    await fetch('/api/update', { method: 'POST' });
+    showToast('Updated! Reloading in 5s...');
+    setTimeout(function() { location.reload(); }, 5000);
+  } catch (e) {
+    showToast('Update failed: ' + e.message);
+  }
+}
+
 function copyUpdate() {
-  var cmd = 'codedash update && codedash restart';
-  copyText(cmd, 'Copied: ' + cmd + '  (run in terminal)');
+  copyText('npm i -g codbash-app@latest && codbash restart', 'Copied update command');
 }
 
 function dismissUpdate() {
@@ -1905,6 +2090,8 @@ function dismissUpdate() {
   loadSessions();
   loadTerminals();
   checkForUpdates();
+  setInterval(checkForUpdates, 10000); // check every 10s
+  setInterval(loadSessions, 60000);    // refresh sessions + invalidate analytics cache every 60s
   startActivePolling();
 
   // Apply saved theme

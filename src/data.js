@@ -5,9 +5,115 @@ const { execSync, execFileSync } = require('child_process');
 
 // ── Constants ──────────────────────────────────────────────
 
-// Detect WSL and find Windows user home for cross-OS data access
+function normalizeProjectPath(value) {
+  if (!value || typeof value !== 'string') return value || '';
+  let normalized = value.trim();
+  if (!normalized) return '';
+  if (/^\\\\\?\\UNC\\/i.test(normalized)) {
+    normalized = '\\\\' + normalized.slice(8);
+  } else if (/^\\\\\?\\[A-Za-z]:\\/i.test(normalized)) {
+    normalized = normalized.slice(4);
+  }
+  return normalized;
+}
+
+function parseWslDistroList(raw) {
+  const text = Buffer.isBuffer(raw)
+    ? raw.toString('utf16le').replace(/^\uFEFF/, '')
+    : String(raw || '').replace(/\0/g, '').replace(/^\uFEFF/, '');
+  return text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+function getWslDistroList(execFileSyncImpl = execFileSync) {
+  try {
+    return parseWslDistroList(execFileSyncImpl('wsl.exe', ['-l', '-q'], {
+      encoding: 'buffer',
+      timeout: 3000,
+      windowsHide: true,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    }));
+  } catch {
+    return [];
+  }
+}
+
+function getRunningWslDistroSet(execFileSyncImpl = execFileSync) {
+  try {
+    return new Set(parseWslDistroList(execFileSyncImpl('wsl.exe', ['--list', '--quiet', '--running'], {
+      encoding: 'buffer',
+      timeout: 3000,
+      windowsHide: true,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    })));
+  } catch {
+    return null;
+  }
+}
+
+function filterWslDistrosForProcessScan(distros, runningDistros) {
+  if (!Array.isArray(distros) || distros.length === 0) return [];
+  if (!(runningDistros instanceof Set)) return [];
+  return distros.filter((distro) => runningDistros.has(distro));
+}
+
+function buildWslUncPath(distro, linuxPath) {
+  if (!distro || !linuxPath || !linuxPath.startsWith('/')) return '';
+  return '\\\\wsl$\\' + distro + linuxPath.replace(/\//g, '\\');
+}
+
+function detectWindowsWslHomes({
+  platform = process.platform,
+  execFileSyncImpl = execFileSync,
+  fsImpl = fs,
+  getDistroList = getWslDistroList,
+  getRunningDistroSet = getRunningWslDistroSet,
+} = {}) {
+  if (platform !== 'win32') return [];
+  const homes = [];
+  const distros = filterWslDistrosForProcessScan(
+    getDistroList(execFileSyncImpl),
+    getRunningDistroSet(execFileSyncImpl)
+  );
+  for (const distro of distros) {
+    try {
+      const linuxHome = String(execFileSyncImpl('wsl.exe', ['-d', distro, 'sh', '-c', 'printf %s "$HOME"'], {
+        encoding: 'utf8',
+        timeout: 3000,
+        windowsHide: true,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      }) || '').trim();
+      if (!linuxHome || !linuxHome.startsWith('/')) continue;
+      const uncHome = buildWslUncPath(distro, linuxHome);
+      if (!uncHome) continue;
+      const hasRelevantAgentData = [
+        path.join(uncHome, '.claude'),
+        path.join(uncHome, '.codex'),
+        path.join(uncHome, '.cursor'),
+        path.join(uncHome, '.local', 'share', 'opencode'),
+      ].some((candidate) => fsImpl.existsSync(candidate));
+      if (hasRelevantAgentData) homes.push(uncHome);
+    } catch {}
+  }
+  return homes;
+}
+
+// Detect cross-OS homes for session data access
 function detectHomes() {
-  const homes = [os.homedir()];
+  const homes = [];
+  const seen = new Set();
+  const addHome = (home) => {
+    const normalized = normalizeProjectPath(home);
+    if (!normalized) return;
+    const key = process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+    if (seen.has(key)) return;
+    seen.add(key);
+    homes.push(normalized);
+  };
+
+  addHome(os.homedir());
   // WSL: also check Windows-side home dirs
   if (process.platform === 'linux' && fs.existsSync('/mnt/c/Users')) {
     try {
@@ -16,21 +122,24 @@ function detectHomes() {
         // Convert C:\Users\foo to /mnt/c/Users/foo
         const drive = winUser[0].toLowerCase();
         const winPath = '/mnt/' + drive + winUser.slice(2).replace(/\\/g, '/');
-        if (fs.existsSync(winPath) && !homes.includes(winPath)) {
-          homes.push(winPath);
-        }
+        if (fs.existsSync(winPath)) addHome(winPath);
       }
     } catch {
       // Fallback: scan /mnt/c/Users/ for directories with .claude
       try {
         for (const u of fs.readdirSync('/mnt/c/Users')) {
           const candidate = '/mnt/c/Users/' + u;
-          if (fs.existsSync(path.join(candidate, '.claude'))) {
-            if (!homes.includes(candidate)) homes.push(candidate);
-          }
+          if (
+            fs.existsSync(path.join(candidate, '.claude')) ||
+            fs.existsSync(path.join(candidate, '.codex')) ||
+            fs.existsSync(path.join(candidate, '.cursor'))
+          ) addHome(candidate);
         }
       } catch {}
     }
+  }
+  if (process.platform === 'win32') {
+    for (const home of detectWindowsWslHomes()) addHome(home);
   }
   return homes;
 }
@@ -40,10 +149,12 @@ const IS_WSL = ALL_HOMES.length > 1;
 
 const CLAUDE_DIR = path.join(ALL_HOMES[0], '.claude');
 const CODEX_DIR = path.join(ALL_HOMES[0], '.codex');
+const QWEN_DIR = path.join(ALL_HOMES[0], '.qwen');
 const OPENCODE_DB = path.join(ALL_HOMES[0], '.local', 'share', 'opencode', 'opencode.db');
 const KIRO_DB = path.join(ALL_HOMES[0], 'Library', 'Application Support', 'kiro-cli', 'data.sqlite3');
 const COPILOT_SESSION_DIR = path.join(ALL_HOMES[0], '.copilot', 'session-state');
 const COPILOT_JB_DIR = path.join(ALL_HOMES[0], '.copilot', 'jb');
+const KILO_DB = path.join(ALL_HOMES[0], '.local', 'share', 'kilo', 'kilo.db');
 const CURSOR_DIR = path.join(ALL_HOMES[0], '.cursor');
 const CURSOR_PROJECTS = path.join(CURSOR_DIR, 'projects');
 const CURSOR_CHATS = path.join(CURSOR_DIR, 'chats');
@@ -55,23 +166,62 @@ const CURSOR_APP_DATA = process.platform === 'darwin'
     : path.join(ALL_HOMES[0], '.config', 'Cursor');
 const CURSOR_GLOBAL_DB = path.join(CURSOR_APP_DATA, 'User', 'globalStorage', 'state.vscdb');
 const CURSOR_WORKSPACE_STORAGE = path.join(CURSOR_APP_DATA, 'User', 'workspaceStorage');
+// VS Code storage for Copilot Chat sessions (same path structure as Cursor but for Code)
+const VSCODE_APP_DATA = process.platform === 'darwin'
+  ? path.join(ALL_HOMES[0], 'Library', 'Application Support', 'Code')
+  : process.platform === 'win32'
+    ? path.join(ALL_HOMES[0], 'AppData', 'Roaming', 'Code')
+    : path.join(ALL_HOMES[0], '.config', 'Code');
+const VSCODE_WORKSPACE_STORAGE = path.join(VSCODE_APP_DATA, 'User', 'workspaceStorage');
 const HISTORY_FILE = path.join(CLAUDE_DIR, 'history.jsonl');
 const PROJECTS_DIR = path.join(CLAUDE_DIR, 'projects');
 
+// Scan Claude desktop app's local-agent-mode-sessions for embedded .claude dirs
+// Structure: ~/Library/Application Support/Claude/local-agent-mode-sessions/<id>/<id>/local_<id>/.claude/
+function detectLocalAgentModeClaudeDirs() {
+  const result = [];
+  if (process.platform !== 'darwin') return result;
+  const baseDir = path.join(ALL_HOMES[0], 'Library', 'Application Support', 'Claude', 'local-agent-mode-sessions');
+  if (!fs.existsSync(baseDir)) return result;
+  try {
+    for (const a of fs.readdirSync(baseDir)) {
+      const aDir = path.join(baseDir, a);
+      if (!fs.statSync(aDir).isDirectory()) continue;
+      for (const b of fs.readdirSync(aDir)) {
+        const bDir = path.join(aDir, b);
+        if (!fs.statSync(bDir).isDirectory()) continue;
+        for (const c of fs.readdirSync(bDir)) {
+          const cDir = path.join(bDir, c);
+          if (!fs.statSync(cDir).isDirectory()) continue;
+          const claudeDir = path.join(cDir, '.claude');
+          if (fs.existsSync(claudeDir)) result.push(claudeDir);
+        }
+      }
+    }
+  } catch {}
+  return result;
+}
+
 // On WSL, collect all alternative data dirs
-const EXTRA_CLAUDE_DIRS = ALL_HOMES.slice(1).map(h => path.join(h, '.claude')).filter(d => fs.existsSync(d));
+const EXTRA_CLAUDE_DIRS = [
+  ...ALL_HOMES.slice(1).map(h => path.join(h, '.claude')).filter(d => fs.existsSync(d)),
+  ...detectLocalAgentModeClaudeDirs(),
+];
 const EXTRA_CODEX_DIRS = ALL_HOMES.slice(1).map(h => path.join(h, '.codex')).filter(d => fs.existsSync(d));
+const EXTRA_QWEN_DIRS = ALL_HOMES.slice(1).map(h => path.join(h, '.qwen')).filter(d => fs.existsSync(d));
 const EXTRA_CURSOR_DIRS = ALL_HOMES.slice(1).map(h => path.join(h, '.cursor')).filter(d => fs.existsSync(d));
 
 // Extra OpenCode/Kiro DBs on Windows side
 const EXTRA_OPENCODE_DBS = ALL_HOMES.slice(1).map(h => path.join(h, 'AppData', 'Local', 'opencode', 'opencode.db')).filter(d => fs.existsSync(d));
 const EXTRA_KIRO_DBS = ALL_HOMES.slice(1).map(h => path.join(h, 'AppData', 'Roaming', 'kiro-cli', 'data.sqlite3')).filter(d => fs.existsSync(d));
+const EXTRA_KILO_DBS = ALL_HOMES.slice(1).map(h => path.join(h, 'AppData', 'Local', 'kilo', 'kilo.db')).filter(d => fs.existsSync(d));
 
 if (IS_WSL) {
-  console.log('  \x1b[36m[WSL]\x1b[0m Detected Windows homes:', ALL_HOMES.slice(1).join(', '));
-  if (EXTRA_CLAUDE_DIRS.length) console.log('  \x1b[36m[WSL]\x1b[0m Extra Claude dirs:', EXTRA_CLAUDE_DIRS.join(', '));
-  if (EXTRA_CODEX_DIRS.length) console.log('  \x1b[36m[WSL]\x1b[0m Extra Codex dirs:', EXTRA_CODEX_DIRS.join(', '));
-  if (EXTRA_CURSOR_DIRS.length) console.log('  \x1b[36m[WSL]\x1b[0m Extra Cursor dirs:', EXTRA_CURSOR_DIRS.join(', '));
+  console.log('  \x1b[36m[WSL]\x1b[0m Also scanning Windows host homes:', ALL_HOMES.slice(1).join(', '));
+  if (EXTRA_CLAUDE_DIRS.length) console.log('  \x1b[36m[WSL]\x1b[0m Windows-side Claude dirs:', EXTRA_CLAUDE_DIRS.join(', '));
+  if (EXTRA_CODEX_DIRS.length) console.log('  \x1b[36m[WSL]\x1b[0m Windows-side Codex dirs:', EXTRA_CODEX_DIRS.join(', '));
+  if (EXTRA_QWEN_DIRS.length) console.log('  \x1b[36m[WSL]\x1b[0m Windows-side Qwen dirs:', EXTRA_QWEN_DIRS.join(', '));
+  if (EXTRA_CURSOR_DIRS.length) console.log('  \x1b[36m[WSL]\x1b[0m Windows-side Cursor dirs:', EXTRA_CURSOR_DIRS.join(', '));
 }
 
 // ── Helpers ────────────────────────────────────────────────
@@ -81,8 +231,55 @@ function readLines(filePath) {
   return fs.readFileSync(filePath, 'utf8').split('\n').map(l => l.replace(/\r$/, '')).filter(Boolean);
 }
 
+function parseTimestamp(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return NaN;
+    if (/^\d+$/.test(trimmed)) return Number(trimmed);
+    return Date.parse(trimmed);
+  }
+  return NaN;
+}
+
+function shortenHomePath(value, homes = ALL_HOMES) {
+  value = normalizeProjectPath(value);
+  if (!value || typeof value !== 'string') return value || '';
+  const valueLower = value.toLowerCase();
+  for (const homeRaw of homes) {
+    const variants = [];
+    const normalizedHome = normalizeProjectPath(homeRaw);
+    if (normalizedHome) variants.push(normalizedHome);
+    const wslMatch = normalizedHome && normalizedHome.match(/^\/mnt\/([a-z])\/(.*)$/i);
+    if (wslMatch) {
+      variants.push(wslMatch[1].toUpperCase() + ':\\' + wslMatch[2].replace(/\//g, '\\'));
+    }
+    const uncWslMatch = normalizedHome && normalizedHome.match(/^\\\\wsl\$\\[^\\]+\\(.+)$/i);
+    if (uncWslMatch) {
+      variants.push('/' + uncWslMatch[1].replace(/\\/g, '/'));
+    }
+    for (const home of variants) {
+      const homeLower = home.toLowerCase();
+      if (valueLower === homeLower) return '~';
+      if (valueLower.startsWith(homeLower)) {
+        const nextChar = value.charAt(home.length);
+        if (nextChar !== '\\' && nextChar !== '/') continue;
+        return '~' + value.slice(home.length);
+      }
+    }
+  }
+  return value;
+}
 // OpenCode built-in tools that should NOT be treated as MCP servers
 const OPENCODE_BUILTIN_TOOLS = new Set([
+  'read', 'write', 'edit', 'bash', 'glob', 'grep', 'task', 'todowrite',
+  'delegate_task', 'apply_patch', 'webfetch', 'websearch', 'slashcommand',
+  'question', 'background_task', 'background_output', 'background_cancel',
+  'lsp_diagnostics', 'ast_grep_search', 'ast_grep_replace', 'session_read',
+  'skill', 'skill_mcp', 'call_omo_agent',
+]);
+
+const KILO_BUILTIN_TOOLS = new Set([
   'read', 'write', 'edit', 'bash', 'glob', 'grep', 'task', 'todowrite',
   'delegate_task', 'apply_patch', 'webfetch', 'websearch', 'slashcommand',
   'question', 'background_task', 'background_output', 'background_cancel',
@@ -94,14 +291,20 @@ const OPENCODE_BUILTIN_TOOLS = new Set([
 // Returns null if it's a built-in tool, otherwise the server name (first segment).
 function parseOpenCodeMcpServer(toolName) {
   if (!toolName || OPENCODE_BUILTIN_TOOLS.has(toolName)) return null;
-  // Match server_tool or server-with-dashes_tool
+  const idx = toolName.indexOf('_');
+  if (idx <= 0) return null;
+  return toolName.slice(0, idx);
+}
+
+function parseKiloMcpServer(toolName) {
+  if (!toolName || KILO_BUILTIN_TOOLS.has(toolName)) return null;
   const idx = toolName.indexOf('_');
   if (idx <= 0) return null;
   return toolName.slice(0, idx);
 }
 
 // Disk cache for parsed Claude session files (keyed by path + mtime + size)
-const PARSED_CACHE_FILE = path.join(os.tmpdir(), 'codedash-parsed-cache.json');
+const PARSED_CACHE_FILE = path.join(os.tmpdir(), 'codedash-parsed-cache-v2.json');
 let _parsedDiskCache = null;
 let _parsedDiskCacheDirty = false;
 // Reverse index: file path -> cache key (avoids repeated fs.statSync)
@@ -132,6 +335,266 @@ function isRealUserPrompt(entry) {
   // tool_result: auto-generated by agent loop (sub-agents, tool responses)
   if (Array.isArray(content) && content.length > 0 && content[0].type === 'tool_result') return false;
   return true;
+}
+
+function parseMcpToolName(toolName) {
+  if (!toolName || !toolName.startsWith('mcp__')) return null;
+  const parts = toolName.split('__');
+  if (parts.length < 3) return null;
+  return {
+    type: 'mcp',
+    server: parts[1],
+    tool: parts.slice(2).join('__'),
+  };
+}
+
+function extractQwenText(parts, options) {
+  options = options || {};
+  if (!Array.isArray(parts)) return '';
+
+  const lines = [];
+  for (const part of parts) {
+    if (!part || typeof part !== 'object') continue;
+    if (part.thought && !options.includeThoughts) continue;
+    if (typeof part.text === 'string' && part.text.trim()) {
+      lines.push(part.text.trim());
+      continue;
+    }
+    if (options.includeToolResults && part.functionResponse) {
+      const response = part.functionResponse.response;
+      if (typeof response === 'string' && response.trim()) {
+        lines.push(response.trim());
+      } else if (response && typeof response.output === 'string' && response.output.trim()) {
+        lines.push(response.output.trim());
+      }
+    }
+  }
+
+  return lines.join('\n').trim();
+}
+
+function extractQwenTools(parts) {
+  if (!Array.isArray(parts)) return [];
+
+  const tools = [];
+  const seen = new Set();
+
+  for (const part of parts) {
+    if (!part || !part.functionCall || !part.functionCall.name) continue;
+    const tool = parseMcpToolName(part.functionCall.name);
+    if (!tool) continue;
+    const key = tool.type + ':' + tool.server + ':' + tool.tool;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    tools.push(tool);
+  }
+
+  return tools;
+}
+
+function normalizeQwenUsage(rawUsage) {
+  if (!rawUsage || typeof rawUsage !== 'object') return null;
+
+  const promptTokens = rawUsage.promptTokenCount || rawUsage.inputTokenCount || 0;
+  const outputTokens = rawUsage.candidatesTokenCount || rawUsage.outputTokenCount || 0;
+  const cacheReadTokens = rawUsage.cachedContentTokenCount || 0;
+
+  return {
+    inputTokens: Math.max(0, promptTokens - cacheReadTokens),
+    outputTokens: outputTokens,
+    cacheReadTokens: cacheReadTokens,
+    cacheCreateTokens: 0,
+    totalTokens: rawUsage.totalTokenCount || (promptTokens + outputTokens),
+    thoughtsTokens: rawUsage.thoughtsTokenCount || 0,
+    toolTokens: rawUsage.toolTokenCount || 0,
+  };
+}
+
+function listQwenSessionFiles(qwenDir) {
+  const files = [];
+  const projectsDir = path.join(qwenDir, 'projects');
+  if (!fs.existsSync(projectsDir)) return files;
+
+  const collectSessionFiles = (dir, depth) => {
+    if (depth < 0 || !fs.existsSync(dir)) return;
+    let entries = [];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        collectSessionFiles(full, depth - 1);
+      } else if (entry.name.endsWith('.jsonl')) {
+        files.push(full);
+      }
+    }
+  };
+
+  try {
+    for (const projectKey of fs.readdirSync(projectsDir)) {
+      const projectDir = path.join(projectsDir, projectKey);
+      if (!fs.existsSync(projectDir) || !fs.statSync(projectDir).isDirectory()) continue;
+
+      const chatDir = path.join(projectDir, 'chats');
+      const sessionDir = path.join(projectDir, 'sessions');
+      if (fs.existsSync(chatDir) || fs.existsSync(sessionDir)) {
+        collectSessionFiles(chatDir, 0);
+        collectSessionFiles(sessionDir, 0);
+      } else {
+        // Newer/older Qwen versions may move session JSONL files around.
+        collectSessionFiles(projectDir, 2);
+      }
+    }
+  } catch {}
+
+  return files;
+}
+
+function parseQwenSessionFile(sessionFile) {
+  if (!fs.existsSync(sessionFile)) return null;
+
+  let stat;
+  let lines;
+  try {
+    stat = fs.statSync(sessionFile);
+    lines = readLines(sessionFile);
+  } catch {
+    return null;
+  }
+
+  let sessionId = path.basename(sessionFile, path.extname(sessionFile));
+  let projectPath = '';
+  let msgCount = 0;
+  let userMsgCount = 0;
+  let firstMsg = '';
+  let firstTs = stat.mtimeMs;
+  let lastTs = stat.mtimeMs;
+  let model = '';
+  const mcpSet = new Set();
+
+  for (const line of lines) {
+    try {
+      const entry = JSON.parse(line);
+      const ts = parseTimestamp(entry.timestamp || entry.ts);
+      if (Number.isFinite(ts)) {
+        if (ts < firstTs) firstTs = ts;
+        if (ts > lastTs) lastTs = ts;
+      }
+
+      if (!sessionId && entry.sessionId) sessionId = entry.sessionId;
+      if (!projectPath && entry.cwd) projectPath = entry.cwd;
+      if (!model && typeof entry.model === 'string') model = entry.model;
+
+      if (entry.type === 'assistant') {
+        const tools = extractQwenTools(((entry.message || {}).parts));
+        for (const tool of tools) mcpSet.add(tool.server);
+      }
+
+      if (entry.type !== 'user' && entry.type !== 'assistant') continue;
+      const text = extractQwenText(((entry.message || {}).parts));
+      if (!text || isSystemMessage(text)) continue;
+
+      msgCount++;
+      if (entry.type === 'user') userMsgCount++;
+      if (!firstMsg) firstMsg = text.slice(0, 200);
+    } catch {}
+  }
+
+  return {
+    sessionId,
+    projectPath,
+    msgCount,
+    userMsgCount,
+    firstMsg,
+    firstTs,
+    lastTs,
+    fileSize: stat.size,
+    model,
+    mcpServers: Array.from(mcpSet),
+  };
+}
+
+function loadQwenDetail(sessionId, filePath, options) {
+  options = options || {};
+  const maxMessages = options.maxMessages || 0;
+  const messages = [];
+
+  if (!filePath || !fs.existsSync(filePath)) return { messages };
+
+  let lines;
+  try {
+    lines = readLines(filePath);
+  } catch {
+    return { messages };
+  }
+
+  for (const line of lines) {
+    if (maxMessages && messages.length >= maxMessages) break;
+    try {
+      const entry = JSON.parse(line);
+      if (entry.type !== 'user' && entry.type !== 'assistant') continue;
+
+      const parts = ((entry.message || {}).parts);
+      const content = extractQwenText(parts);
+      if (!content || isSystemMessage(content)) continue;
+
+      const msg = {
+        role: entry.type,
+        content: content.slice(0, 2000),
+        uuid: entry.uuid || '',
+        timestamp: entry.timestamp || '',
+        model: entry.type === 'assistant' ? (entry.model || '') : '',
+      };
+
+      if (entry.type === 'assistant') {
+        const tools = extractQwenTools(parts);
+        const usage = normalizeQwenUsage(entry.usageMetadata);
+        if (tools.length > 0) msg.tools = tools;
+        if (usage) msg.tokens = usage;
+      }
+
+      messages.push(msg);
+    } catch {}
+  }
+
+  return { messages };
+}
+
+function scanQwenSessions(qwenDir) {
+  const sessions = [];
+  const files = listQwenSessionFiles(qwenDir);
+
+  for (const filePath of files) {
+    const summary = parseQwenSessionFile(filePath);
+    if (!summary || !summary.sessionId) continue;
+
+    const projectPath = summary.projectPath || '';
+    sessions.push({
+      id: summary.sessionId,
+      tool: 'qwen',
+      project: projectPath,
+      project_short: projectPath ? projectPath.replace(os.homedir(), '~') : '',
+      first_ts: summary.firstTs,
+      last_ts: summary.lastTs,
+      messages: summary.msgCount,
+      first_message: summary.firstMsg || '',
+      has_detail: true,
+      file_size: summary.fileSize,
+      detail_messages: summary.msgCount,
+      user_messages: summary.userMsgCount || 0,
+      model: summary.model || '',
+      mcp_servers: summary.mcpServers || [],
+      skills: [],
+      _session_file: filePath,
+      _qwen_dir: qwenDir,
+    });
+  }
+
+  return sessions;
 }
 
 function parseClaudeSessionFile(sessionFile) {
@@ -167,6 +630,7 @@ function parseClaudeSessionFile(sessionFile) {
   let totalUserMsgs = 0;    // all user-type messages (including tool_result, sub-agents)
   let entrypointFound = false;
   let worktreeOriginalCwd = '';
+  let lastRecap = '';
   const mcpSet = new Set();
   const skillSet = new Set();
 
@@ -195,6 +659,10 @@ function parseClaudeSessionFile(sessionFile) {
       if (entry.type === 'custom-title' && typeof entry.customTitle === 'string') {
         const title = entry.customTitle.trim();
         if (title) customTitle = title.slice(0, 200);
+      }
+      if (entry.type === 'system' && entry.subtype === 'away_summary') {
+        const txt = (entry.content || '').trim();
+        if (txt) lastRecap = txt.slice(0, 300);
       }
       if (!firstMsg && entry.type === 'user' && entry.message && entry.message.content) {
         const content = extractContent(entry.message.content).trim();
@@ -232,6 +700,7 @@ function parseClaudeSessionFile(sessionFile) {
     lastTs,
     fileSize: stat.size,
     worktreeOriginalCwd,
+    lastRecap,
     mcpServers: Array.from(mcpSet),
     skills: Array.from(skillSet),
   };
@@ -266,6 +735,10 @@ function mergeClaudeSessionDetail(session, summary, sessionFile) {
 
   if (summary.customTitle) {
     session.session_name = summary.customTitle;
+  }
+
+  if (summary.lastRecap) {
+    session.recap = summary.lastRecap;
   }
 }
 
@@ -412,7 +885,7 @@ function loadOpenCodeDetail(sessionId) {
     // Get messages with parts joined
     const rows = execFileSync('sqlite3', [
       OPENCODE_DB,
-      `SELECT m.data, GROUP_CONCAT(p.data, '|||') FROM message m LEFT JOIN part p ON p.message_id = m.id WHERE m.session_id = '${sessionId.replace(/'/g, "''")}' GROUP BY m.id ORDER BY m.time_created`
+      `SELECT m.id, m.data, GROUP_CONCAT(p.data, '|||') FROM message m LEFT JOIN part p ON p.message_id = m.id WHERE m.session_id = '${sessionId.replace(/'/g, "''")}' GROUP BY m.id ORDER BY m.time_created`
     ], { encoding: 'utf8', timeout: 10000, windowsHide: true }).trim();
 
     if (!rows) return { messages: [] };
@@ -422,19 +895,19 @@ function loadOpenCodeDetail(sessionId) {
       const sepIdx = row.indexOf('|');
       if (sepIdx < 0) continue;
 
-      // Parse message data (first column)
-      // Find the JSON boundary - message data ends where part data starts
+      let rest = row.slice(sepIdx + 1);
+      const msgId = row.slice(0, sepIdx);
+
       let msgJson, partsRaw;
       try {
-        // Try to find where message JSON ends
         let braceCount = 0;
         let jsonEnd = 0;
-        for (let i = 0; i < row.length; i++) {
-          if (row[i] === '{') braceCount++;
-          if (row[i] === '}') { braceCount--; if (braceCount === 0) { jsonEnd = i + 1; break; } }
+        for (let i = 0; i < rest.length; i++) {
+          if (rest[i] === '{') braceCount++;
+          if (rest[i] === '}') { braceCount--; if (braceCount === 0) { jsonEnd = i + 1; break; } }
         }
-        msgJson = row.slice(0, jsonEnd);
-        partsRaw = row.slice(jsonEnd + 1); // skip |
+        msgJson = rest.slice(0, jsonEnd);
+        partsRaw = rest.slice(jsonEnd + 1);
       } catch { continue; }
 
       let msgData;
@@ -492,6 +965,175 @@ function loadOpenCodeDetail(sessionId) {
         uuid: '',
         model: msgData.modelID || msgData.model?.modelID || '',
         tokens: tokens,
+        _dbId: msgId,
+      };
+      if (tools.length > 0) msg.tools = tools;
+      messages.push(msg);
+    }
+
+    return { messages: messages.slice(0, 200) };
+  } catch {
+    return { messages: [] };
+  }
+}
+
+function scanKiloCliSessions() {
+  const sessions = [];
+  if (!fs.existsSync(KILO_DB)) return sessions;
+
+  try {
+    const rows = execFileSync('sqlite3', [
+      '-separator', '\t',
+      KILO_DB,
+      'SELECT s.id, s.title, s.directory, s.time_created, s.time_updated, COUNT(m.id) as msg_count FROM session s LEFT JOIN message m ON m.session_id = s.id GROUP BY s.id ORDER BY s.time_updated DESC'
+    ], { encoding: 'utf8', timeout: 5000, windowsHide: true }).trim();
+
+    if (!rows) return sessions;
+
+    const sessionMcp = {};
+    const sessionSkills = {};
+    try {
+      const toolRows = execFileSync('sqlite3', [
+        '-separator', '\t',
+        KILO_DB,
+        "SELECT session_id, json_extract(data, '$.tool'), json_extract(data, '$.state.input.name') FROM part WHERE json_extract(data, '$.type') = 'tool'"
+      ], { encoding: 'utf8', timeout: 10000, maxBuffer: 50 * 1024 * 1024, windowsHide: true }).trim();
+      if (toolRows) {
+        for (const tr of toolRows.split('\n')) {
+          const cols = tr.split('\t');
+          if (cols.length < 2) continue;
+          const sid = cols[0];
+          const toolName = cols[1];
+          const skillName = cols[2];
+          if (!sid || !toolName) continue;
+          if (toolName === 'skill' || toolName === 'skill_mcp') {
+            if (skillName) {
+              if (!sessionSkills[sid]) sessionSkills[sid] = new Set();
+              const sk = skillName.includes(':') ? skillName.split(':')[0] : skillName;
+              sessionSkills[sid].add(sk);
+            }
+            continue;
+          }
+          const server = parseKiloMcpServer(toolName);
+          if (server) {
+            if (!sessionMcp[sid]) sessionMcp[sid] = new Set();
+            sessionMcp[sid].add(server);
+          }
+        }
+      }
+    } catch {}
+
+    for (const row of rows.split('\n')) {
+      const parts = row.split('\t');
+      if (parts.length < 6) continue;
+      const [id, title, directory, timeCreated, timeUpdated, msgCount] = parts;
+
+      sessions.push({
+        id: id,
+        tool: 'kilo',
+        project: directory || '',
+        project_short: (directory || '').replace(os.homedir(), '~'),
+        first_ts: parseInt(timeCreated) || Date.now(),
+        last_ts: parseInt(timeUpdated) || Date.now(),
+        messages: parseInt(msgCount) || 0,
+        first_message: title || '',
+        has_detail: true,
+        file_size: 0,
+        detail_messages: parseInt(msgCount) || 0,
+        mcp_servers: sessionMcp[id] ? Array.from(sessionMcp[id]) : [],
+        skills: sessionSkills[id] ? Array.from(sessionSkills[id]) : [],
+      });
+    }
+  } catch {}
+
+  return sessions;
+}
+
+function loadKiloCliDetail(sessionId) {
+  if (!fs.existsSync(KILO_DB)) return { messages: [] };
+
+  try {
+    const rows = execFileSync('sqlite3', [
+      KILO_DB,
+      `SELECT m.id, m.data, GROUP_CONCAT(p.data, '|||') FROM message m LEFT JOIN part p ON p.message_id = m.id WHERE m.session_id = '${sessionId.replace(/'/g, "''")}' GROUP BY m.id ORDER BY m.time_created`
+    ], { encoding: 'utf8', timeout: 10000, maxBuffer: 50 * 1024 * 1024, windowsHide: true }).trim();
+
+    if (!rows) return { messages: [] };
+
+    const messages = [];
+    for (const row of rows.split('\n')) {
+      const sepIdx = row.indexOf('|');
+      if (sepIdx < 0) continue;
+
+      let rest = row.slice(sepIdx + 1);
+      const msgId = row.slice(0, sepIdx);
+      let msgJson, partsRaw;
+      try {
+        let braceCount = 0;
+        let jsonEnd = 0;
+        for (let i = 0; i < rest.length; i++) {
+          if (rest[i] === '{') braceCount++;
+          if (rest[i] === '}') { braceCount--; if (braceCount === 0) { jsonEnd = i + 1; break; } }
+        }
+        msgJson = rest.slice(0, jsonEnd);
+        partsRaw = rest.slice(jsonEnd + 1);
+      } catch { continue; }
+
+      let msgData;
+      try { msgData = JSON.parse(msgJson); } catch { continue; }
+
+      const role = msgData.role;
+      if (role !== 'user' && role !== 'assistant') continue;
+
+      let content = '';
+      const tools = [];
+      const toolSeen = new Set();
+      if (partsRaw) {
+        for (const partStr of partsRaw.split('|||')) {
+          try {
+            const part = JSON.parse(partStr);
+            if (part.type === 'text' && part.text) {
+              content += part.text + '\n';
+            } else if (part.type === 'tool' && part.tool) {
+              const toolName = part.tool;
+              if (toolName === 'skill' || toolName === 'skill_mcp') {
+                const skillRaw = part.state && part.state.input && part.state.input.name;
+                if (skillRaw) {
+                  const sk = skillRaw.includes(':') ? skillRaw.split(':')[0] : skillRaw;
+                  const key = 'skill:' + sk;
+                  if (!toolSeen.has(key)) {
+                    toolSeen.add(key);
+                    tools.push({ type: 'skill', skill: sk });
+                  }
+                }
+              } else {
+                const server = parseKiloMcpServer(toolName);
+                if (server) {
+                  const tool = toolName.slice(server.length + 1);
+                  const key = 'mcp:' + server + ':' + tool;
+                  if (!toolSeen.has(key)) {
+                    toolSeen.add(key);
+                    tools.push({ type: 'mcp', server: server, tool: tool });
+                  }
+                }
+              }
+            }
+          } catch {}
+        }
+      }
+
+      content = content.trim();
+      if (!content) continue;
+
+      const tokens = msgData.tokens || {};
+
+      const msg = {
+        role: role,
+        content: content.slice(0, 2000),
+        uuid: '',
+        model: msgData.modelID || msgData.model?.modelID || '',
+        tokens: tokens,
+        _dbId: msgId,
       };
       if (tools.length > 0) msg.tools = tools;
       messages.push(msg);
@@ -818,6 +1460,369 @@ function loadKiroDetail(conversationId) {
         const resp = entry.assistant.Response || entry.assistant.response || {};
         const text = resp.content || '';
         if (text) messages.push({ role: 'assistant', content: text.slice(0, 2000), uuid: resp.message_id || '' });
+      }
+    }
+
+    return { messages: messages.slice(0, 200) };
+  } catch {
+    return { messages: [] };
+  }
+}
+
+// ── Copilot Chat (VS Code extension) ─────────────────────────
+
+// Build workspace-hash -> project path mapping for VS Code workspaceStorage
+let _copilotWsMapCache = null;
+const COPILOT_WS_MAP_CACHE_FILE = path.join(os.tmpdir(), 'codedash-copilot-ws-map.json');
+const COPILOT_WS_MAP_TTL = 600000; // 10 minutes
+
+function buildCopilotWorkspaceMap() {
+  if (_copilotWsMapCache) return _copilotWsMapCache;
+
+  // Current mtime of VS Code workspaceStorage — cache is invalidated if it changed
+  let currentWsMtime = 0;
+  try {
+    if (fs.existsSync(VSCODE_WORKSPACE_STORAGE)) {
+      currentWsMtime = fs.statSync(VSCODE_WORKSPACE_STORAGE).mtimeMs;
+    }
+  } catch {}
+
+  // Try disk cache first — valid only if TTL not expired AND workspaceStorage mtime unchanged
+  try {
+    if (fs.existsSync(COPILOT_WS_MAP_CACHE_FILE)) {
+      const cached = JSON.parse(fs.readFileSync(COPILOT_WS_MAP_CACHE_FILE, 'utf8'));
+      const fresh = cached._ts && (Date.now() - cached._ts) < COPILOT_WS_MAP_TTL;
+      const mtimeMatches = cached._wsMtime === currentWsMtime;
+      if (fresh && mtimeMatches) {
+        delete cached._ts;
+        delete cached._wsMtime;
+        _copilotWsMapCache = cached;
+        return cached;
+      }
+    }
+  } catch {}
+
+  const map = {}; // hash -> { folder, chatDir }
+  if (!fs.existsSync(VSCODE_WORKSPACE_STORAGE)) return map;
+
+  try {
+    for (const hash of fs.readdirSync(VSCODE_WORKSPACE_STORAGE)) {
+      const chatDir = path.join(VSCODE_WORKSPACE_STORAGE, hash, 'chatSessions');
+      if (!fs.existsSync(chatDir)) continue;
+
+      // Read workspace.json for project path
+      let folder = '';
+      try {
+        const wsJson = path.join(VSCODE_WORKSPACE_STORAGE, hash, 'workspace.json');
+        const wsData = JSON.parse(fs.readFileSync(wsJson, 'utf8'));
+        folder = wsData.folder || '';
+        if (folder.startsWith('file://')) {
+          folder = decodeURIComponent(folder.replace('file://', ''));
+          // Windows: /D:/path -> D:/path
+          if (process.platform === 'win32' && /^\/[a-zA-Z]:/.test(folder)) {
+            folder = folder.slice(1);
+          }
+        } else if (folder.startsWith('vscode-remote://')) {
+          const m = folder.match(/vscode-remote:\/\/[^/]+(\/.*)/);
+          folder = m ? decodeURIComponent(m[1]) : '';
+        }
+      } catch {}
+
+      map[hash] = { folder, chatDir };
+    }
+  } catch {}
+
+  _copilotWsMapCache = map;
+
+  try {
+    const toSave = {};
+    for (const k of Object.keys(map)) toSave[k] = map[k];
+    toSave._ts = Date.now();
+    toSave._wsMtime = currentWsMtime;
+    fs.writeFileSync(COPILOT_WS_MAP_CACHE_FILE, JSON.stringify(toSave));
+  } catch {}
+
+  return map;
+}
+
+// Extract text from a Copilot response array (mix of text, thinking, tool invocations)
+function extractCopilotResponseText(response) {
+  if (!Array.isArray(response)) return '';
+  const parts = [];
+  for (const item of response) {
+    // Text responses: kind is absent, 'text', or 'markdownContent'
+    if ((!item.kind || item.kind === 'text' || item.kind === 'markdownContent') && typeof item.value === 'string') {
+      parts.push(item.value);
+    }
+  }
+  return parts.join('').trim();
+}
+
+// Parse a Copilot JSON session file — returns { requests, creationDate, sessionId }
+// Note: large files (30+ MB) are slow because of embedded image attachments in variableData.
+// JSON.parse is unavoidable here, but Node handles it in ~1-2s for typical files.
+function parseCopilotJson(filePath) {
+  const raw = fs.readFileSync(filePath, 'utf8');
+  return JSON.parse(raw);
+}
+
+// Disk cache for Copilot session metadata (avoids re-scanning large files)
+const COPILOT_PARSED_CACHE_FILE = path.join(os.tmpdir(), 'codedash-copilot-parsed-cache.json');
+let _copilotParsedCache = null;
+
+function _loadCopilotParsedCache() {
+  if (_copilotParsedCache) return;
+  try {
+    if (fs.existsSync(COPILOT_PARSED_CACHE_FILE)) {
+      _copilotParsedCache = JSON.parse(fs.readFileSync(COPILOT_PARSED_CACHE_FILE, 'utf8'));
+    } else {
+      _copilotParsedCache = {};
+    }
+  } catch { _copilotParsedCache = {}; }
+}
+
+function _saveCopilotParsedCache() {
+  try { fs.writeFileSync(COPILOT_PARSED_CACHE_FILE, JSON.stringify(_copilotParsedCache)); } catch {}
+}
+
+// Scan metadata for a Copilot JSON file. Uses disk cache keyed by path|mtime|size.
+function scanCopilotJsonMetadata(filePath, stat) {
+  _loadCopilotParsedCache();
+  const cacheKey = filePath + '|' + stat.mtimeMs + '|' + stat.size;
+  if (_copilotParsedCache[cacheKey]) return _copilotParsedCache[cacheKey];
+
+  let result;
+  if (stat.size < 1048576) {
+    // Small file (<1MB): full parse is fast
+    const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    const reqs = data.requests || [];
+    result = {
+      creationDate: data.creationDate || 0,
+      msgCount: reqs.length,
+      firstMsg: (reqs[0] && reqs[0].message && reqs[0].message.text || '').slice(0, 200),
+    };
+  } else {
+    // Large file: peek first 4KB for metadata, estimate msg count
+    const fd = fs.openSync(filePath, 'r');
+    const peekBuf = Buffer.alloc(Math.min(4096, stat.size));
+    fs.readSync(fd, peekBuf, 0, peekBuf.length, 0);
+    fs.closeSync(fd);
+    const peek = peekBuf.toString('utf8');
+    let creationDate = 0;
+    const cdMatch = peek.match(/"creationDate"\s*:\s*(\d+)/);
+    if (cdMatch) creationDate = parseInt(cdMatch[1]);
+    let firstMsg = '';
+    const fmMatch = peek.match(/"text"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+    if (fmMatch) try { firstMsg = JSON.parse('"' + fmMatch[1] + '"').slice(0, 200); } catch {}
+    // For large files, estimate message count (actual count loaded on detail view)
+    // Average Copilot request is ~200KB-2MB with attachments
+    result = { creationDate, msgCount: Math.max(1, Math.round(stat.size / 500000)), firstMsg };
+  }
+
+  _copilotParsedCache[cacheKey] = result;
+  return result;
+}
+
+// Scan metadata for a Copilot JSONL file. Uses disk cache.
+function scanCopilotJsonlMetadata(filePath, stat) {
+  _loadCopilotParsedCache();
+  const cacheKey = filePath + '|' + stat.mtimeMs + '|' + stat.size;
+  if (_copilotParsedCache[cacheKey]) return _copilotParsedCache[cacheKey];
+
+  let creationDate = 0, msgCount = 0, firstMsg = '';
+  const lines = readLines(filePath);
+  for (const line of lines) {
+    if (line.startsWith('{"kind":0')) {
+      const cdMatch = line.match(/"creationDate"\s*:\s*(\d+)/);
+      if (cdMatch) creationDate = parseInt(cdMatch[1]);
+      continue;
+    }
+    if (!_isCopilotLineRelevant(line)) continue;
+    let entry;
+    try { entry = JSON.parse(line); } catch { continue; }
+    if (entry.kind === 2 && Array.isArray(entry.k) && entry.k.length === 1 && entry.k[0] === 'requests' && Array.isArray(entry.v)) {
+      for (const req of entry.v) {
+        msgCount++;
+        if (!firstMsg && req.message && req.message.text) {
+          firstMsg = req.message.text.slice(0, 200);
+        }
+      }
+    }
+  }
+
+  const result = { creationDate, msgCount, firstMsg };
+  _copilotParsedCache[cacheKey] = result;
+  return result;
+}
+
+// Quick string check: does this JSONL line contain data we need?
+// Skip kind:1 mutations (inputState, modelState, hasPendingEdits, responderUsername, etc.)
+// and kind:2 splices to non-request paths — these often contain huge image byte arrays.
+function _isCopilotLineRelevant(line) {
+  // kind:0 (init) — always relevant
+  if (line.startsWith('{"kind":0')) return true;
+  // kind:2 with "requests" in path — relevant
+  if (line.startsWith('{"kind":2') && line.includes('"requests"')) return true;
+  // Everything else (kind:1, kind:2 without requests) — skip
+  return false;
+}
+
+// Parse a Copilot JSONL mutation file — targeted extraction of requests & responses
+// Performance: skips irrelevant lines (inputState, attachments with image byte arrays)
+// BEFORE calling JSON.parse, avoiding parsing multi-MB attachment lines.
+function parseCopilotJsonl(filePath) {
+  const lines = readLines(filePath);
+  let base = { requests: [] };
+  const extraResponses = {}; // requestIndex -> [response items...]
+
+  for (const line of lines) {
+    if (!_isCopilotLineRelevant(line)) continue;
+
+    let entry;
+    try { entry = JSON.parse(line); } catch { continue; }
+
+    if (entry.kind === 0) {
+      // Initial state — extract only what we need, discard attachments
+      const v = entry.v || {};
+      base = { requests: v.requests || [], creationDate: v.creationDate, sessionId: v.sessionId };
+    } else if (entry.kind === 2) {
+      const k = entry.k || [];
+      if (k.length === 1 && k[0] === 'requests' && Array.isArray(entry.v)) {
+        // Splice new requests into requests array
+        for (const req of entry.v) {
+          base.requests.push(req);
+        }
+      } else if (k.length === 3 && k[0] === 'requests' && k[2] === 'response' && Array.isArray(entry.v)) {
+        // Append response items to a specific request
+        const idx = parseInt(k[1]);
+        if (!isNaN(idx)) {
+          if (!extraResponses[idx]) extraResponses[idx] = [];
+          for (const item of entry.v) extraResponses[idx].push(item);
+        }
+      }
+    }
+  }
+
+  // Merge extra responses into requests
+  for (const idx of Object.keys(extraResponses)) {
+    const i = parseInt(idx);
+    if (base.requests[i]) {
+      if (!base.requests[i].response) base.requests[i].response = [];
+      for (const item of extraResponses[idx]) {
+        base.requests[i].response.push(item);
+      }
+    }
+  }
+
+  return base;
+}
+
+function scanCopilotSessions() {
+  const sessions = [];
+  if (!fs.existsSync(VSCODE_WORKSPACE_STORAGE)) return sessions;
+
+  const wsMap = buildCopilotWorkspaceMap();
+
+  for (const hash of Object.keys(wsMap)) {
+    const { folder, chatDir } = wsMap[hash];
+    let files;
+    try { files = fs.readdirSync(chatDir); } catch { continue; }
+
+    for (const file of files) {
+      if (!file.endsWith('.json') && !file.endsWith('.jsonl')) continue;
+      const filePath = path.join(chatDir, file);
+      let stat;
+      try { stat = fs.statSync(filePath); } catch { continue; }
+      if (stat.size < 10) continue; // skip empty files
+
+      let firstMsg = '';
+      let msgCount = 0;
+      let creationDate = 0;
+
+      try {
+        const meta = file.endsWith('.json')
+          ? scanCopilotJsonMetadata(filePath, stat)
+          : scanCopilotJsonlMetadata(filePath, stat);
+        creationDate = meta.creationDate;
+        msgCount = meta.msgCount;
+        firstMsg = meta.firstMsg;
+      } catch {}
+
+      if (msgCount === 0) continue; // skip sessions with no user messages
+
+      const sessionId = 'copilot-' + file.replace(/\.(json|jsonl)$/, '');
+      sessions.push({
+        id: sessionId,
+        tool: 'copilot-chat',
+        project: folder,
+        project_short: folder.replace(os.homedir(), '~'),
+        first_ts: creationDate || stat.birthtimeMs || stat.mtimeMs,
+        last_ts: stat.mtimeMs,
+        messages: msgCount * 2, // each request has user + assistant
+        first_message: firstMsg,
+        has_detail: true,
+        file_size: stat.size,
+        detail_messages: msgCount * 2,
+        _file: filePath,
+      });
+    }
+  }
+
+  _saveCopilotParsedCache();
+  return sessions;
+}
+
+function loadCopilotDetail(sessionId) {
+  // Find file: check loaded sessions first, then scan
+  const sessions = _sessionsCache || [];
+  let filePath = null;
+  for (const s of (Array.isArray(sessions) ? sessions : Object.values(sessions))) {
+    if (s.id === sessionId && s._file) { filePath = s._file; break; }
+  }
+
+  if (!filePath) {
+    // Fallback: search workspace storage
+    const baseName = sessionId.replace(/^copilot-/, '');
+    const wsMap = buildCopilotWorkspaceMap();
+    for (const hash of Object.keys(wsMap)) {
+      const { chatDir } = wsMap[hash];
+      for (const ext of ['.json', '.jsonl']) {
+        const candidate = path.join(chatDir, baseName + ext);
+        if (fs.existsSync(candidate)) { filePath = candidate; break; }
+      }
+      if (filePath) break;
+    }
+  }
+
+  if (!filePath || !fs.existsSync(filePath)) return { messages: [] };
+
+  try {
+    let data;
+    if (filePath.endsWith('.jsonl')) {
+      data = parseCopilotJsonl(filePath);
+    } else {
+      data = parseCopilotJson(filePath);
+    }
+
+    const messages = [];
+    for (const req of (data.requests || [])) {
+      // User message
+      if (req.message && req.message.text) {
+        messages.push({
+          role: 'user',
+          content: req.message.text.slice(0, 2000),
+          uuid: req.requestId || '',
+        });
+      }
+
+      // Assistant response: concatenate text parts from response array
+      const respText = extractCopilotResponseText(req.response);
+      if (respText) {
+        messages.push({
+          role: 'assistant',
+          content: respText.slice(0, 2000),
+          uuid: req.responseId || '',
+        });
       }
     }
 
@@ -1197,17 +2202,6 @@ function parseCodexSessionFile(sessionFile) {
     return null;
   }
 
-  const parseTimestamp = (value) => {
-    if (typeof value === 'number' && Number.isFinite(value)) return value;
-    if (typeof value === 'string') {
-      const trimmed = value.trim();
-      if (!trimmed) return NaN;
-      if (/^\d+$/.test(trimmed)) return Number(trimmed);
-      return Date.parse(trimmed);
-    }
-    return NaN;
-  };
-
   let projectPath = '';
   let msgCount = 0;
   let userMsgCount = 0;
@@ -1473,6 +2467,7 @@ let _historyMtime = 0;
 let _historySize = 0;
 let _projectsDirMtime = 0;
 let _copilotDirMtime = 0;
+let _projectsSubDirMtimes = {}; // { subDirPath: mtimeMs }
 
 function _sessionsNeedRescan() {
   // Check if history.jsonl or projects dir changed since last scan
@@ -1484,6 +2479,14 @@ function _sessionsNeedRescan() {
     if (fs.existsSync(PROJECTS_DIR)) {
       const st = fs.statSync(PROJECTS_DIR);
       if (st.mtimeMs !== _projectsDirMtime) return true;
+      // Also check subdirectory mtimes — new sessions in existing project dirs
+      // don't change PROJECTS_DIR mtime, only their parent subdir mtime
+      for (const entry of fs.readdirSync(PROJECTS_DIR, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        const subDir = path.join(PROJECTS_DIR, entry.name);
+        const subSt = fs.statSync(subDir);
+        if (subSt.mtimeMs !== (_projectsSubDirMtimes[subDir] || 0)) return true;
+      }
     }
     if (fs.existsSync(COPILOT_SESSION_DIR)) {
       const st = fs.statSync(COPILOT_SESSION_DIR);
@@ -1502,6 +2505,12 @@ function _updateScanMarkers() {
     }
     if (fs.existsSync(PROJECTS_DIR)) {
       _projectsDirMtime = fs.statSync(PROJECTS_DIR).mtimeMs;
+      _projectsSubDirMtimes = {};
+      for (const entry of fs.readdirSync(PROJECTS_DIR, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        const subDir = path.join(PROJECTS_DIR, entry.name);
+        try { _projectsSubDirMtimes[subDir] = fs.statSync(subDir).mtimeMs; } catch {}
+      }
     }
     if (fs.existsSync(COPILOT_SESSION_DIR)) {
       _copilotDirMtime = fs.statSync(COPILOT_SESSION_DIR).mtimeMs;
@@ -1699,6 +2708,16 @@ function loadSessions() {
     } catch {}
   }
 
+  // Load Qwen Code sessions
+  if (fs.existsSync(QWEN_DIR)) {
+    try {
+      const qwenSessions = scanQwenSessions(QWEN_DIR);
+      for (const qs of qwenSessions) {
+        sessions[qs.id] = qs;
+      }
+    } catch {}
+  }
+
   // Load OpenCode sessions
   try {
     const opencodeSessions = scanOpenCodeSessions();
@@ -1723,10 +2742,27 @@ function loadSessions() {
     }
   } catch {}
 
-  // Load Copilot CLI sessions
+// Load Copilot CLI sessions
   try {
     const copilotSessions = scanCopilotSessions();
     for (const cs of copilotSessions) sessions[cs.id] = cs;
+  } catch {}
+
+  // Load Kilo CLI sessions
+  try {
+    const kiloSessions = scanKiloCliSessions();
+    for (const ks of kiloSessions) {
+      sessions[ks.id] = ks;
+    }
+  } catch {}
+
+  // Load Copilot Chat sessions
+  try {
+    const copilotSessions = scanCopilotSessions();
+    for (const cs of copilotSessions) {
+      sessions[cs.id] = cs;
+    }
+  } catch {}
   } catch {}
 
   // WSL: also load from Windows-side dirs
@@ -1795,9 +2831,19 @@ function loadSessions() {
               _claude_dir: extraClaudeDir,
               _session_file: fp,
               worktree_original_cwd: summary.worktreeOriginalCwd || '',
+              recap: summary.lastRecap || '',
             };
           }
         }
+      }
+    } catch {}
+  }
+
+  for (const extraQwenDir of EXTRA_QWEN_DIRS) {
+    try {
+      const qwenSessions = scanQwenSessions(extraQwenDir);
+      for (const qs of qwenSessions) {
+        sessions[qs.id] = qs;
       }
     } catch {}
   }
@@ -1868,6 +2914,7 @@ function loadSessions() {
             _claude_dir: CLAUDE_DIR,
             _session_file: filePath,
             worktree_original_cwd: summary.worktreeOriginalCwd || '',
+            recap: summary.lastRecap || '',
           };
         }
       }
@@ -1933,13 +2980,34 @@ function loadSessionDetail(sessionId, project) {
     return loadCursorDetail(sessionId);
   }
 
+  // Qwen
+  if (found.format === 'qwen') {
+    return loadQwenDetail(sessionId, found.file, { maxMessages: 200 });
+  }
+
   // Kiro uses SQLite
   if (found.format === 'kiro') {
     return loadKiroDetail(sessionId);
   }
 
-  // Copilot CLI uses JSONL events
+// Copilot CLI uses JSONL events
   if (found.format === 'copilot') {
+    return loadCopilotDetail(sessionId);
+  }
+
+  // Kilo CLI uses SQLite
+  if (found.format === 'kilo') {
+    return loadKiloCliDetail(sessionId);
+  }
+
+  // Copilot Chat (JSON/JSONL)
+  if (found.format === 'copilot-chat') {
+    return loadCopilotDetail(sessionId);
+  }
+
+  // Copilot Chat (JSON/JSONL)
+  if (found.format === 'copilot-chat') {
+>>>>>>> main
     return loadCopilotDetail(sessionId);
   }
 
@@ -1952,17 +3020,36 @@ function loadSessionDetail(sessionId, project) {
 
       if (found.format === 'claude') {
         if (entry.type === 'user' || entry.type === 'assistant') {
-          const content = extractContent((entry.message || {}).content);
+          const rawContent = (entry.message || {}).content;
+          const content = extractContent(rawContent);
           if (content) {
             const msg = { role: entry.type, content: content.slice(0, 2000), uuid: entry.uuid || '' };
+            if (entry.type === 'user') {
+              if (isFilteredClaudeStructuredMessage(content)) continue;
+              const structured = parseStructuredMessage('claude', entry.type, content, entry);
+              if (structured) msg.structured = structured;
+            }
             if (entry.type === 'assistant') {
-              const rawContent = (entry.message || {}).content;
               if (Array.isArray(rawContent)) {
                 const tools = extractTools(rawContent);
                 if (tools.length > 0) msg.tools = tools;
               }
             }
             messages.push(msg);
+          }
+        }
+        if (entry.type === 'queue-operation') {
+          const content = extractContent(entry.content);
+          if (content) {
+            const structured = parseStructuredMessage('claude', 'queue', content, entry);
+            if (structured) {
+              messages.push({
+                role: 'queue',
+                content: content.slice(0, 2000),
+                uuid: entry.uuid || '',
+                structured: structured,
+              });
+            }
           }
         }
       } else {
@@ -1973,7 +3060,10 @@ function loadSessionDetail(sessionId, project) {
           if (role === 'user' || role === 'assistant') {
             const content = extractContent(entry.payload.content);
             if (content && !isSystemMessage(content)) {
-              messages.push({ role: role, content: content.slice(0, 2000), uuid: '' });
+              const msg = { role: role, content: content.slice(0, 2000), uuid: '' };
+              const structured = parseStructuredMessage('codex', role, content, entry);
+              if (structured) msg.structured = structured;
+              messages.push(msg);
             }
           }
           // Codex function_call → attach as tool to last assistant message
@@ -2011,6 +3101,54 @@ function loadSessionDetail(sessionId, project) {
 
 function deleteSession(sessionId, project) {
   const deleted = [];
+  let found = findSessionFile(sessionId, project);
+
+  if (found && found.format === 'qwen' && fs.existsSync(found.file)) {
+    fs.unlinkSync(found.file);
+    deleted.push('session file');
+
+    const chatDir = path.dirname(found.file);
+    try {
+      if (fs.existsSync(chatDir) && fs.readdirSync(chatDir).length === 0) {
+        fs.rmdirSync(chatDir);
+      }
+      const projectDir = path.dirname(chatDir);
+      if (fs.existsSync(projectDir) && fs.readdirSync(projectDir).length === 0) {
+        fs.rmdirSync(projectDir);
+      }
+    } catch {}
+
+    return deleted;
+  }
+
+  // Try SQLite agents first (Kilo, OpenCode)
+  found = findSessionFile(sessionId, project);
+  if (found && found.format === 'kilo') {
+    try {
+      const safeId = /^[a-zA-Z0-9_-]+$/.test(sessionId) ? sessionId : '';
+      if (!safeId) return deleted;
+      execFileSync('sqlite3', [KILO_DB,
+        `DELETE FROM part WHERE message_id IN (SELECT id FROM message WHERE session_id = '${safeId}');` +
+        `DELETE FROM message WHERE session_id = '${safeId}';` +
+        `DELETE FROM session WHERE id = '${safeId}';`
+      ], { timeout: 5000, windowsHide: true });
+      deleted.push('kilo db records');
+    } catch {}
+    return deleted;
+  }
+  if (found && found.format === 'opencode') {
+    try {
+      const safeId = /^[a-zA-Z0-9_-]+$/.test(sessionId) ? sessionId : '';
+      if (!safeId) return deleted;
+      execFileSync('sqlite3', [OPENCODE_DB,
+        `DELETE FROM part WHERE message_id IN (SELECT id FROM message WHERE session_id = '${safeId}');` +
+        `DELETE FROM message WHERE session_id = '${safeId}';` +
+        `DELETE FROM session WHERE id = '${safeId}';`
+      ], { timeout: 5000, windowsHide: true });
+      deleted.push('opencode db records');
+    } catch {}
+    return deleted;
+  }
 
   // 1. Remove session JSONL file from project dir
   const projectKey = project.replace(/[^a-zA-Z0-9-]/g, '-');
@@ -2089,6 +3227,8 @@ function exportSessionMarkdown(sessionId, project) {
       found.format === 'cursor' ? loadCursorDetail(sessionId) :
       found.format === 'opencode' ? loadOpenCodeDetail(sessionId) :
       found.format === 'kiro' ? loadKiroDetail(sessionId) :
+      found.format === 'kilo' ? loadKiloCliDetail(sessionId) :
+      found.format === 'qwen' ? loadQwenDetail(sessionId, found.file) :
       null;
     if (detail && detail.messages && detail.messages.length > 0) {
       const parts = [`# Session ${sessionId}\n\n**Project:** ${project || '(none)'}\n`];
@@ -2201,6 +3341,26 @@ function _buildSessionFileIndex() {
     } catch {}
   }
 
+  // Index Copilot chat session files
+  if (fs.existsSync(VSCODE_WORKSPACE_STORAGE)) {
+    try {
+      const wsMap = buildCopilotWorkspaceMap();
+      for (const hash of Object.keys(wsMap)) {
+        const { chatDir } = wsMap[hash];
+        try {
+          for (const f of fs.readdirSync(chatDir)) {
+            if (f.endsWith('.json') || f.endsWith('.jsonl')) {
+              const sid = 'copilot-' + f.replace(/\.(json|jsonl)$/, '');
+              if (!_sessionFileIndex[sid]) {
+                _sessionFileIndex[sid] = { file: path.join(chatDir, f), format: 'copilot-chat' };
+              }
+            }
+          }
+        } catch {}
+      }
+    } catch {}
+  }
+
   _sessionFileIndexTs = now;
 }
 
@@ -2239,9 +3399,87 @@ function findSessionFile(sessionId, project) {
     if (codexFile) return { file: codexFile, format: 'codex' };
   }
 
-  // Try OpenCode (SQLite — return special marker)
+  const findQwenInProjects = (projectsDir) => {
+    if (!fs.existsSync(projectsDir)) return null;
+
+    const walkProjectDir = (dir, depth) => {
+      if (depth < 0 || !fs.existsSync(dir)) return null;
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          const nested = walkProjectDir(full, depth - 1);
+          if (nested) return nested;
+        } else if (entry.name === `${sessionId}.jsonl`) {
+          return full;
+        }
+      }
+      return null;
+    };
+
+    if (project) {
+      const projectKey = project.replace(/[^a-zA-Z0-9-]/g, '-');
+      const directCandidates = [
+        path.join(projectsDir, projectKey, 'chats', `${sessionId}.jsonl`),
+        path.join(projectsDir, projectKey, 'sessions', `${sessionId}.jsonl`),
+        path.join(projectsDir, projectKey, `${sessionId}.jsonl`),
+      ];
+      for (const candidate of directCandidates) {
+        if (fs.existsSync(candidate)) return candidate;
+      }
+
+      const walked = walkProjectDir(path.join(projectsDir, projectKey), 2);
+      if (walked) return walked;
+    }
+
+    for (const projectKey of fs.readdirSync(projectsDir)) {
+      const projectDir = path.join(projectsDir, projectKey);
+      if (!fs.existsSync(projectDir) || !fs.statSync(projectDir).isDirectory()) continue;
+
+      const directCandidates = [
+        path.join(projectDir, 'chats', `${sessionId}.jsonl`),
+        path.join(projectDir, 'sessions', `${sessionId}.jsonl`),
+        path.join(projectDir, `${sessionId}.jsonl`),
+      ];
+      for (const candidate of directCandidates) {
+        if (fs.existsSync(candidate)) return candidate;
+      }
+
+      try {
+        for (const subdir of ['chats', 'sessions']) {
+          const dir = path.join(projectDir, subdir);
+          if (!fs.existsSync(dir)) continue;
+          for (const file of fs.readdirSync(dir)) {
+            if (file === `${sessionId}.jsonl`) return path.join(dir, file);
+          }
+        }
+      } catch {}
+
+      const walked = walkProjectDir(projectDir, 2);
+      if (walked) return walked;
+    }
+
+    return null;
+  };
+
+  const qwenFile = findQwenInProjects(path.join(QWEN_DIR, 'projects'));
+  if (qwenFile) return { file: qwenFile, format: 'qwen' };
+
+  for (const extraQwenDir of EXTRA_QWEN_DIRS) {
+    const extraFile = findQwenInProjects(path.join(extraQwenDir, 'projects'));
+    if (extraFile) return { file: extraFile, format: 'qwen' };
+  }
+
+  // Try OpenCode (SQLite — verify session exists in DB)
   if (fs.existsSync(OPENCODE_DB) && sessionId.startsWith('ses_')) {
-    return { file: OPENCODE_DB, format: 'opencode', sessionId: sessionId };
+    try {
+      const check = execFileSync('sqlite3', [
+        OPENCODE_DB,
+        `SELECT COUNT(*) FROM session WHERE id = '${sessionId.replace(/'/g, "''")}';`
+      ], { encoding: 'utf8', timeout: 3000, windowsHide: true }).trim();
+      if (parseInt(check) > 0) {
+        return { file: OPENCODE_DB, format: 'opencode', sessionId: sessionId };
+      }
+    } catch {}
   }
 
   // Cursor JSONL files are already in the index. Only check vscdb fallback.
@@ -2273,29 +3511,25 @@ function findSessionFile(sessionId, project) {
     } catch {}
   }
 
-  // Try Copilot CLI (VS Code session dir)
-  const copilotEventsPath = path.join(COPILOT_SESSION_DIR, sessionId, 'events.jsonl');
-  if (fs.existsSync(copilotEventsPath)) {
-    return { file: copilotEventsPath, format: 'copilot', sessionId: sessionId };
-  }
-
-  // Try Copilot CLI (JetBrains)
+// Load Copilot CLI sessions
   try {
-    const jbUuids = fs.readdirSync(COPILOT_JB_DIR);
-    for (const uuid of jbUuids) {
-      const p = path.join(COPILOT_JB_DIR, uuid, 'partition-1.jsonl');
-      if (fs.existsSync(p)) {
-        const text = fs.readFileSync(p, 'utf8');
-        for (const line of text.split('\n')) {
-          if (!line.trim()) continue;
-          try {
-            const ev = JSON.parse(line);
-            if (ev.type === 'partition.created' && ev.data && ev.data.conversationId === sessionId) {
-              return { file: p, format: 'copilot', sessionId: sessionId };
-            }
-          } catch {}
-        }
-      }
+    const copilotSessions = scanCopilotSessions();
+    for (const cs of copilotSessions) sessions[cs.id] = cs;
+  } catch {}
+
+  // Load Kilo CLI sessions
+  try {
+    const kiloSessions = scanKiloCliSessions();
+    for (const ks of kiloSessions) {
+      sessions[ks.id] = ks;
+    }
+  } catch {}
+
+  // Load Copilot Chat sessions
+  try {
+    const copilotSessions = scanCopilotSessions();
+    for (const cs of copilotSessions) {
+      sessions[cs.id] = cs;
     }
   } catch {}
 
@@ -2327,6 +3561,214 @@ function extractContent(raw) {
       .join('\n');
   }
   return String(raw);
+}
+
+const STRUCTURED_TAG_PATTERN = '[a-z_][a-z0-9_-]*';
+const STRUCTURED_WRAPPER_RE = new RegExp('^<(' + STRUCTURED_TAG_PATTERN + ')>\\s*([\\s\\S]*?)\\s*</\\1>$', 'i');
+const STRUCTURED_FIELD_RE = new RegExp('<(' + STRUCTURED_TAG_PATTERN + ')>([\\s\\S]*?)</\\1>', 'ig');
+const FILTERED_CLAUDE_STRUCTURED_TAGS = new Set(['local-command-caveat']);
+const CODEX_STRUCTURED_MESSAGE_FIELDS = {
+  user_shell_command: [
+    { field: 'command', max_length: 0 },
+    { field: 'result', max_length: 1500 },
+  ],
+  user_action: [
+    { field: 'context', max_length: 200 },
+    { field: 'action', max_length: 0 },
+    { field: 'results', max_length: 1500 },
+  ],
+};
+
+const CLAUDE_STRUCTURED_MESSAGE_FIELDS = {
+  slash_command: [
+    { tag: 'command-name', field: 'command_name', max_length: 200 },
+    { tag: 'command-message', field: 'command_message', max_length: 200 },
+    { tag: 'command-args', field: 'command_args', max_length: 500, required: false },
+  ],
+  bash_result: [
+    { tag: 'bash-stdout', field: 'stdout', max_length: 1500, required: false },
+    { tag: 'bash-stderr', field: 'stderr', max_length: 1500, required: false },
+  ],
+  task_notification: [
+    { tag: 'task-id', field: 'task_id', max_length: 120 },
+    { tag: 'tool-use-id', field: 'tool_use_id', max_length: 120 },
+    { tag: 'output-file', field: 'output_file', max_length: 500 },
+    { tag: 'status', field: 'status', max_length: 40 },
+    { tag: 'summary', field: 'summary', max_length: 300 },
+    { tag: 'result', field: 'result', max_length: 1500, required: false },
+    { tag: 'usage', field: 'usage', max_length: 0, required: false },
+  ],
+  task_notification_monitor: [
+    { tag: 'task-id', field: 'task_id', max_length: 120 },
+    { tag: 'summary', field: 'summary', max_length: 300 },
+    { tag: 'event', field: 'event', max_length: 1500 },
+  ],
+  task_usage: [
+    { tag: 'total_tokens', field: 'total_tokens', max_length: 40 },
+    { tag: 'tool_uses', field: 'tool_uses', max_length: 40 },
+    { tag: 'duration_ms', field: 'duration_ms', max_length: 40 },
+  ],
+};
+function normalizeStructuredField(value) {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function truncateStructuredField(value, maxLength) {
+  if (typeof value !== 'string') return '';
+  if (!maxLength || maxLength < 0 || value.length <= maxLength) return value;
+  return value.slice(0, maxLength);
+}
+
+function parseStructuredWrapper(content) {
+  const trimmed = typeof content === 'string' ? content.trim() : '';
+  if (!trimmed) return null;
+  const match = trimmed.match(STRUCTURED_WRAPPER_RE);
+  if (!match) return null;
+  return { tag: match[1], body: match[2] };
+}
+
+function parseStructuredFields(body, fieldDescriptors) {
+  if (!body || !Array.isArray(fieldDescriptors) || fieldDescriptors.length === 0) return null;
+
+  const fields = {};
+  const fieldsByTag = new Map(fieldDescriptors.map(function(def) {
+    return [def.tag || def.field, def];
+  }));
+  // Clone the global regex so each parse starts with a clean lastIndex.
+  const pattern = new RegExp(STRUCTURED_FIELD_RE.source, STRUCTURED_FIELD_RE.flags);
+  let cursor = 0;
+  let match;
+
+  while ((match = pattern.exec(body))) {
+    if (body.slice(cursor, match.index).trim()) return null;
+
+    const tag = match[1];
+    const def = fieldsByTag.get(tag);
+    if (!def || fields[def.field] !== undefined) return null;
+
+    const value = normalizeStructuredField(match[2]);
+    if (!value && def.required !== false) return null;
+    fields[def.field] = value;
+    cursor = match.index + match[0].length;
+  }
+
+  if (body.slice(cursor).trim()) return null;
+
+  for (const def of fieldDescriptors) {
+    if (def.required === false) continue;
+    if (!fields[def.field]) return null;
+  }
+
+  return fields;
+}
+
+function applyStructuredFieldThresholds(fields, fieldDescriptors) {
+  const result = {};
+  for (const def of fieldDescriptors) {
+    result[def.field] = truncateStructuredField(fields[def.field], def.max_length || 0);
+  }
+  return result;
+}
+
+function parseStructuredSingleTag(content, tag, fieldName, maxLength) {
+  const wrapped = parseStructuredWrapper(content);
+  if (!wrapped || wrapped.tag !== tag) return null;
+  const value = normalizeStructuredField(wrapped.body);
+  if (!value) return null;
+  const fields = {};
+  fields[fieldName] = truncateStructuredField(value, maxLength || 0);
+  return fields;
+}
+function parseCodexStructuredMessage(content) {
+  const wrapped = parseStructuredWrapper(content);
+  if (!wrapped) return null;
+
+  const fieldDescriptors = CODEX_STRUCTURED_MESSAGE_FIELDS[wrapped.tag];
+  if (!fieldDescriptors) return null;
+
+  const fields = parseStructuredFields(wrapped.body, fieldDescriptors);
+  if (!fields) return null;
+
+  return {
+    agent: 'codex',
+    kind: wrapped.tag,
+    fields: applyStructuredFieldThresholds(fields, fieldDescriptors),
+  };
+}
+
+function isFilteredClaudeStructuredMessage(content) {
+  const wrapped = parseStructuredWrapper(content);
+  return !!(wrapped && FILTERED_CLAUDE_STRUCTURED_TAGS.has(wrapped.tag));
+}
+
+function parseClaudeTaskNotification(content) {
+  const wrapped = parseStructuredWrapper(content);
+  if (!wrapped || wrapped.tag !== 'task-notification') return null;
+
+  let fieldDescriptors = CLAUDE_STRUCTURED_MESSAGE_FIELDS.task_notification;
+  let fields = parseStructuredFields(wrapped.body, fieldDescriptors);
+  if (!fields) {
+    fieldDescriptors = CLAUDE_STRUCTURED_MESSAGE_FIELDS.task_notification_monitor;
+    fields = parseStructuredFields(wrapped.body, fieldDescriptors);
+  }
+  if (!fields) return null;
+
+  const parsedFields = applyStructuredFieldThresholds(fields, fieldDescriptors);
+  if (parsedFields.usage) {
+    const usageFields = parseStructuredFields(parsedFields.usage, CLAUDE_STRUCTURED_MESSAGE_FIELDS.task_usage);
+    parsedFields.usage = usageFields
+      ? applyStructuredFieldThresholds(usageFields, CLAUDE_STRUCTURED_MESSAGE_FIELDS.task_usage)
+      : null;
+  }
+
+  return {
+    agent: 'claude',
+    kind: 'task_notification',
+    fields: parsedFields,
+  };
+}
+
+function parseClaudeStructuredMessage(entry, content) {
+  if (!content) return null;
+
+  const slashCommandFields = parseStructuredFields(content, CLAUDE_STRUCTURED_MESSAGE_FIELDS.slash_command);
+  if (slashCommandFields) {
+    return {
+      agent: 'claude',
+      kind: 'slash_command',
+      fields: applyStructuredFieldThresholds(slashCommandFields, CLAUDE_STRUCTURED_MESSAGE_FIELDS.slash_command),
+    };
+  }
+
+  const bashInputFields = parseStructuredSingleTag(content, 'bash-input', 'input', 0);
+  if (bashInputFields) {
+    return { agent: 'claude', kind: 'bash_input', fields: bashInputFields };
+  }
+
+  const bashResultFields = parseStructuredFields(content, CLAUDE_STRUCTURED_MESSAGE_FIELDS.bash_result);
+  if (bashResultFields) {
+    return {
+      agent: 'claude',
+      kind: 'bash_result',
+      fields: applyStructuredFieldThresholds(bashResultFields, CLAUDE_STRUCTURED_MESSAGE_FIELDS.bash_result),
+    };
+  }
+
+  const localCommandStdoutFields = parseStructuredSingleTag(content, 'local-command-stdout', 'output', 1500);
+  if (localCommandStdoutFields) {
+    return { agent: 'claude', kind: 'local_command_stdout', fields: localCommandStdoutFields };
+  }
+
+  return parseClaudeTaskNotification(content);
+}
+
+function parseStructuredMessage(agent, role, content, entry) {
+  if (!content) return null;
+  if (agent === 'codex') return parseCodexStructuredMessage(content);
+  if (agent === 'claude' && (role === 'user' || role === 'queue')) {
+    return parseClaudeStructuredMessage(entry, content);
+  }
+  return null;
 }
 
 // Extract MCP/Skill tool_use blocks from a Claude assistant message content array.
@@ -2377,6 +3819,13 @@ function getSessionPreview(sessionId, project, limit) {
     });
   }
 
+  if (found.format === 'qwen') {
+    const detail = loadQwenDetail(sessionId, found.file, { maxMessages: limit });
+    return detail.messages.map(function(m) {
+      return { role: m.role, content: m.content.slice(0, 300) };
+    });
+  }
+
   // Kiro: use loadKiroDetail and slice
   if (found.format === 'kiro') {
     var detail = loadKiroDetail(sessionId);
@@ -2391,6 +3840,36 @@ function getSessionPreview(sessionId, project, limit) {
     return detail.messages.slice(0, limit).map(function(m) {
       return { role: m.role, content: m.content.slice(0, 300) };
     });
+  }
+
+  // Kilo: use loadKiloCliDetail and slice
+  if (found.format === 'kilo') {
+    var detail = loadKiloCliDetail(sessionId);
+    return detail.messages.slice(0, limit).map(function(m) {
+      return { role: m.role, content: m.content.slice(0, 300) };
+    });
+  }
+
+  if (found.format === 'qwen') {
+    const detail = loadQwenDetail(sessionId, found.file);
+    const messages = (detail.messages || []).map(function(m) {
+      const ms = m.timestamp ? new Date(m.timestamp).getTime() : 0;
+      return {
+        role: m.role,
+        content: (m.content || '').slice(0, 3000),
+        timestamp: m.timestamp || '',
+        ms: ms,
+      };
+    });
+
+    const startMs = messages.length > 0 ? messages[0].ms : 0;
+    const endMs = messages.length > 0 ? messages[messages.length - 1].ms : 0;
+    return {
+      messages,
+      startMs,
+      endMs,
+      duration: endMs - startMs,
+    };
   }
 
   const messages = [];
@@ -2449,29 +3928,74 @@ function buildSearchIndex(sessions) {
     if (!found) continue;
 
     try {
-      const lines = readLines(found.file);
+      if (found.format === 'qwen') {
+        const detail = loadQwenDetail(s.id, found.file);
+        const texts = (detail.messages || []).map(function(m) {
+          return { role: m.role, content: (m.content || '').slice(0, 500) };
+        }).filter(function(m) {
+          return m.content && !isSystemMessage(m.content);
+        });
+        if (texts.length > 0) {
+          const fullText = texts.map(t => t.content).join(' ').toLowerCase();
+          index.push({ sessionId: s.id, texts, fullText });
+        }
+        continue;
+      }
+
       const texts = [];
 
-      for (const line of lines) {
-        try {
-          const entry = JSON.parse(line);
-          let role, content;
-
-          if (found.format === 'claude') {
-            if (entry.type !== 'user' && entry.type !== 'assistant') continue;
-            role = entry.type;
-            content = extractContent((entry.message || {}).content);
-          } else {
-            if (entry.type !== 'response_item' || !entry.payload) continue;
-            role = entry.payload.role;
-            if (role !== 'user' && role !== 'assistant') continue;
-            content = extractContent(entry.payload.content);
+      if (found.format === 'kilo') {
+        const detail = loadKiloCliDetail(s.id);
+        for (const msg of detail.messages) {
+          if (msg.content && !isSystemMessage(msg.content)) {
+            texts.push({ role: msg.role, content: msg.content.slice(0, 500) });
           }
-
-          if (content && !isSystemMessage(content)) {
-            texts.push({ role, content: content.slice(0, 500) });
+        }
+      } else if (found.format === 'opencode') {
+        const detail = loadOpenCodeDetail(s.id);
+        for (const msg of detail.messages) {
+          if (msg.content && !isSystemMessage(msg.content)) {
+            texts.push({ role: msg.role, content: msg.content.slice(0, 500) });
           }
-        } catch {}
+        }
+      } else if (found.format === 'kiro') {
+        const detail = loadKiroDetail(s.id);
+        for (const msg of detail.messages) {
+          if (msg.content && !isSystemMessage(msg.content)) {
+            texts.push({ role: msg.role, content: msg.content.slice(0, 500) });
+          }
+        }
+      } else if (found.format === 'cursor') {
+        const detail = loadCursorDetail(s.id);
+        for (const msg of detail.messages) {
+          if (msg.content && !isSystemMessage(msg.content)) {
+            texts.push({ role: msg.role, content: msg.content.slice(0, 500) });
+          }
+        }
+      } else {
+        const lines = readLines(found.file);
+
+        for (const line of lines) {
+          try {
+            const entry = JSON.parse(line);
+            let role, content;
+
+            if (found.format === 'claude') {
+              if (entry.type !== 'user' && entry.type !== 'assistant') continue;
+              role = entry.type;
+              content = extractContent((entry.message || {}).content);
+            } else {
+              if (entry.type !== 'response_item' || !entry.payload) continue;
+              role = entry.payload.role;
+              if (role !== 'user' && role !== 'assistant') continue;
+              content = extractContent(entry.payload.content);
+            }
+
+            if (content && !isSystemMessage(content)) {
+              texts.push({ role, content: content.slice(0, 500) });
+            }
+          } catch {}
+        }
       }
 
       if (texts.length > 0) {
@@ -2537,35 +4061,91 @@ function getSessionReplay(sessionId, project) {
   if (!found) return { messages: [], duration: 0 };
 
   const messages = [];
-  const lines = readLines(found.file);
 
-  for (const line of lines) {
+  if (found.format === 'kilo' || found.format === 'opencode') {
+    const detail = found.format === 'kilo' ? loadKiloCliDetail(sessionId) : loadOpenCodeDetail(sessionId);
+    const dbPath = found.format === 'kilo' ? KILO_DB : OPENCODE_DB;
+    let timestamps = {};
     try {
-      const entry = JSON.parse(line);
-      let role, content, ts;
-
-      if (found.format === 'claude') {
-        if (entry.type !== 'user' && entry.type !== 'assistant') continue;
-        role = entry.type;
-        content = extractContent((entry.message || {}).content);
-        ts = entry.timestamp || '';
-      } else {
-        if (entry.type !== 'response_item' || !entry.payload) continue;
-        role = entry.payload.role;
-        if (role !== 'user' && role !== 'assistant') continue;
-        content = extractContent(entry.payload.content);
-        ts = entry.timestamp || '';
+      const tsRows = execFileSync('sqlite3', [
+        dbPath,
+        `SELECT id, time_created FROM message WHERE session_id = '${sessionId.replace(/'/g, "''")}' ORDER BY time_created`
+      ], { encoding: 'utf8', timeout: 5000, windowsHide: true }).trim();
+      if (tsRows) {
+        for (const row of tsRows.split('\n')) {
+          const sepIdx = row.indexOf('|');
+          if (sepIdx < 0) continue;
+          const msgId = row.slice(0, sepIdx);
+          timestamps[msgId] = parseInt(row.slice(sepIdx + 1)) || 0;
+        }
       }
-
-      if (!content || isSystemMessage(content)) continue;
-
-      messages.push({
-        role,
-        content: content.slice(0, 3000),
-        timestamp: ts,
-        ms: ts ? new Date(ts).getTime() : 0,
-      });
     } catch {}
+    for (const msg of detail.messages) {
+      if (msg.content && !isSystemMessage(msg.content)) {
+        const ts = msg._dbId ? (timestamps[msg._dbId] || 0) : 0;
+        messages.push({
+          role: msg.role,
+          content: msg.content.slice(0, 3000),
+          timestamp: ts,
+          ms: ts,
+        });
+      }
+    }
+  } else if (found.format === 'kiro') {
+    const detail = loadKiroDetail(sessionId);
+    for (const msg of detail.messages) {
+      if (msg.content && !isSystemMessage(msg.content)) {
+        messages.push({
+          role: msg.role,
+          content: msg.content.slice(0, 3000),
+          timestamp: 0,
+          ms: 0,
+        });
+      }
+    }
+  } else if (found.format === 'cursor') {
+    const detail = loadCursorDetail(sessionId);
+    for (const msg of detail.messages) {
+      if (msg.content && !isSystemMessage(msg.content)) {
+        messages.push({
+          role: msg.role,
+          content: msg.content.slice(0, 3000),
+          timestamp: 0,
+          ms: 0,
+        });
+      }
+    }
+  } else {
+    const lines = readLines(found.file);
+
+    for (const line of lines) {
+      try {
+        const entry = JSON.parse(line);
+        let role, content, ts;
+
+        if (found.format === 'claude') {
+          if (entry.type !== 'user' && entry.type !== 'assistant') continue;
+          role = entry.type;
+          content = extractContent((entry.message || {}).content);
+          ts = entry.timestamp || '';
+        } else {
+          if (entry.type !== 'response_item' || !entry.payload) continue;
+          role = entry.payload.role;
+          if (role !== 'user' && role !== 'assistant') continue;
+          content = extractContent(entry.payload.content);
+          ts = entry.timestamp || '';
+        }
+
+        if (!content || isSystemMessage(content)) continue;
+
+        messages.push({
+          role,
+          content: content.slice(0, 3000),
+          timestamp: ts,
+          ms: ts ? new Date(ts).getTime() : 0,
+        });
+      } catch {}
+    }
   }
 
   // Calculate duration
@@ -2594,8 +4174,8 @@ const MODEL_PRICING = {
   'gpt-5':             { input: 1.25 / 1e6, output: 10.00 / 1e6, cache_read: 0.625 / 1e6, cache_create: 1.25 / 1e6 },
 };
 
-function getModelPricing(model) {
-  if (!model) return MODEL_PRICING['claude-sonnet-4-6']; // default
+function findModelPricing(model) {
+  if (!model) return null;
   for (const key in MODEL_PRICING) {
     if (model.includes(key) || model.startsWith(key)) return MODEL_PRICING[key];
   }
@@ -2604,7 +4184,11 @@ function getModelPricing(model) {
   if (model.includes('haiku')) return MODEL_PRICING['claude-haiku-4-5'];
   if (model.includes('sonnet')) return MODEL_PRICING['claude-sonnet-4-6'];
   if (model.includes('codex')) return MODEL_PRICING['codex-mini-latest'];
-  return MODEL_PRICING['claude-sonnet-4-6'];
+  return null;
+}
+
+function getModelPricing(model) {
+  return findModelPricing(model) || MODEL_PRICING['claude-sonnet-4-6'];
 }
 
 // ── Compute real cost from session file token usage ────────
@@ -2630,26 +4214,38 @@ function _saveCostDiskCache() {
   } catch {}
 }
 
-const EMPTY_COST = { cost: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreateTokens: 0, contextPctSum: 0, contextTurnCount: 0, model: '' };
+const EMPTY_COST = {
+  cost: 0,
+  inputTokens: 0,
+  outputTokens: 0,
+  cacheReadTokens: 0,
+  cacheCreateTokens: 0,
+  contextPctSum: 0,
+  contextTurnCount: 0,
+  model: '',
+  estimated: false,
+  unavailable: false,
+};
 
 // In-memory cost cache (reset when sessions cache resets)
 const _costMemCache = {};
 
 function computeSessionCost(sessionId, project) {
-  // Fast in-memory cache (same session never changes within request cycle)
   if (_costMemCache[sessionId] !== undefined) return _costMemCache[sessionId];
 
   const found = findSessionFile(sessionId, project);
   if (!found) { _costMemCache[sessionId] = EMPTY_COST; return EMPTY_COST; }
 
   // Skip formats that never have cost data
-  if (found.format === 'cursor' || found.format === 'kiro') { _costMemCache[sessionId] = EMPTY_COST; return EMPTY_COST; }
+  if (found.format === 'cursor' || found.format === 'kiro' || found.format === 'copilot-chat') { _costMemCache[sessionId] = EMPTY_COST; return EMPTY_COST; }
 
   // Check disk cache (keyed by file path + mtime + size for JSONL, sessionId for SQLite)
   _loadCostDiskCache();
   let cacheKey = '';
   if (found.format === 'opencode') {
     cacheKey = 'opencode:' + sessionId;
+  } else if (found.format === 'kilo') {
+    cacheKey = 'kilo:' + sessionId;
   } else if (found.file) {
     // Use file stat lookup (reuse from parsed cache index if available)
     const cached = _fileCacheKeyIndex[found.file];
@@ -2673,11 +4269,26 @@ function computeSessionCost(sessionId, project) {
   let contextPctSum = 0;
   let contextTurnCount = 0;
   let model = '';
+  let estimated = false;
+  let unavailable = false;
 
   // OpenCode: query SQLite directly for token data
   if (found.format === 'opencode') {
     const safeId = /^[a-zA-Z0-9_-]+$/.test(found.sessionId) ? found.sessionId : '';
-    if (!safeId) return { cost: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreateTokens: 0, contextPctSum: 0, contextTurnCount: 0, model: '' };
+    if (!safeId) {
+      return {
+        cost: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreateTokens: 0,
+        contextPctSum: 0,
+        contextTurnCount: 0,
+        model: '',
+        estimated: false,
+        unavailable: false,
+      };
+    }
     try {
       const rows = execFileSync('sqlite3', [
         OPENCODE_DB,
@@ -2715,6 +4326,110 @@ function computeSessionCost(sessionId, project) {
       }
     } catch {}
     return { cost: totalCost, inputTokens: totalInput, outputTokens: totalOutput, cacheReadTokens: totalCacheRead, cacheCreateTokens: totalCacheCreate, contextPctSum, contextTurnCount, model };
+  }
+
+  // Kilo CLI: query SQLite directly for token data
+  if (found.format === 'kilo') {
+    const safeId = /^[a-zA-Z0-9_-]+$/.test(found.sessionId) ? found.sessionId : '';
+    if (!safeId) return { cost: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreateTokens: 0, contextPctSum: 0, contextTurnCount: 0, model: '' };
+    try {
+      const rows = execFileSync('sqlite3', [
+        KILO_DB,
+        `SELECT data FROM message WHERE session_id = '${safeId}' AND json_extract(data, '$.role') = 'assistant' ORDER BY time_created`
+      ], { encoding: 'utf8', timeout: 10000, windowsHide: true }).trim();
+      if (rows) {
+        for (const row of rows.split('\n')) {
+          try {
+            const msgData = JSON.parse(row);
+            const t = msgData.tokens || {};
+            if (!model && msgData.modelID) model = msgData.modelID;
+            const inp = t.input || 0;
+            const out = (t.output || 0) + (t.reasoning || 0);
+            const cacheRead = (t.cache && t.cache.read) || 0;
+            const cacheCreate = (t.cache && t.cache.write) || 0;
+            if (inp === 0 && out === 0) continue;
+
+            const pricing = getModelPricing(msgData.modelID || model);
+            totalInput += inp;
+            totalOutput += out;
+            totalCacheRead += cacheRead;
+            totalCacheCreate += cacheCreate;
+            totalCost += inp * pricing.input
+                       + cacheCreate * pricing.cache_create
+                       + cacheRead * pricing.cache_read
+                       + out * pricing.output;
+
+            const contextThisTurn = inp + cacheCreate + cacheRead;
+            if (contextThisTurn > 0) {
+              contextPctSum += (contextThisTurn / CONTEXT_WINDOW) * 100;
+              contextTurnCount++;
+            }
+          } catch {}
+        }
+      }
+    } catch {}
+    return {
+      cost: totalCost,
+      inputTokens: totalInput,
+      outputTokens: totalOutput,
+      cacheReadTokens: totalCacheRead,
+      cacheCreateTokens: totalCacheCreate,
+      contextPctSum,
+      contextTurnCount,
+      model,
+      estimated: false,
+      unavailable: false,
+    };
+  }
+
+  if (found.format === 'qwen') {
+    try {
+      const lines = readLines(found.file);
+      for (const line of lines) {
+        try {
+          const entry = JSON.parse(line);
+          if (entry.type !== 'assistant') continue;
+
+          if (!model && typeof entry.model === 'string') model = entry.model;
+          const usage = normalizeQwenUsage(entry.usageMetadata);
+          if (!usage) continue;
+
+          totalInput += usage.inputTokens;
+          totalOutput += usage.outputTokens;
+          totalCacheRead += usage.cacheReadTokens;
+          totalCacheCreate += usage.cacheCreateTokens;
+
+          const pricing = findModelPricing(entry.model || model || '');
+          if (pricing) {
+            totalCost += usage.inputTokens * pricing.input
+                       + usage.cacheCreateTokens * pricing.cache_create
+                       + usage.cacheReadTokens * pricing.cache_read
+                       + usage.outputTokens * pricing.output;
+          } else if (usage.totalTokens > 0) {
+            unavailable = true;
+          }
+
+          const contextThisTurn = usage.inputTokens + usage.cacheCreateTokens + usage.cacheReadTokens;
+          if (contextThisTurn > 0) {
+            contextPctSum += (contextThisTurn / (entry.contextWindowSize || 1000000)) * 100;
+            contextTurnCount++;
+          }
+        } catch {}
+      }
+    } catch {}
+
+    return {
+      cost: totalCost,
+      inputTokens: totalInput,
+      outputTokens: totalOutput,
+      cacheReadTokens: totalCacheRead,
+      cacheCreateTokens: totalCacheCreate,
+      contextPctSum,
+      contextTurnCount,
+      model,
+      estimated: false,
+      unavailable,
+    };
   }
 
   try {
@@ -2764,10 +4479,22 @@ function computeSessionCost(sessionId, project) {
       totalInput = Math.round(tokens * 0.3);
       totalOutput = Math.round(tokens * 0.7);
       totalCost = totalInput * pricing.input + totalOutput * pricing.output;
+      estimated = true;
     } catch {}
   }
 
-  const result = { cost: totalCost, inputTokens: totalInput, outputTokens: totalOutput, cacheReadTokens: totalCacheRead, cacheCreateTokens: totalCacheCreate, contextPctSum, contextTurnCount, model };
+  const result = {
+    cost: totalCost,
+    inputTokens: totalInput,
+    outputTokens: totalOutput,
+    cacheReadTokens: totalCacheRead,
+    cacheCreateTokens: totalCacheCreate,
+    contextPctSum,
+    contextTurnCount,
+    model,
+    estimated,
+    unavailable,
+  };
   if (cacheKey) _costDiskCache[cacheKey] = result;
   _costMemCache[sessionId] = result;
   return result;
@@ -2836,7 +4563,7 @@ function _computeCostAnalytics(sessions) {
   let sessionsWithData = 0;
   const agentNoCostData = {};
   for (const s of sessions) {
-    if (!byAgent[s.tool]) byAgent[s.tool] = { cost: 0, sessions: 0, tokens: 0, estimated: false };
+    if (!byAgent[s.tool]) byAgent[s.tool] = { cost: 0, sessions: 0, tokens: 0, estimated: false, unavailable: false };
   }
   const sessionCosts = [];
 
@@ -2880,10 +4607,52 @@ function _computeCostAnalytics(sessions) {
     } catch {}
   }
 
+  // Pre-compute Kilo CLI costs in one batch query
+  const kiloCostCache = {};
+  const kiloSessions = sessions.filter(s => s.tool === 'kilo');
+  if (kiloSessions.length > 0 && fs.existsSync(KILO_DB)) {
+    try {
+      const batchRows = execFileSync('sqlite3', [
+        KILO_DB,
+        `SELECT session_id, data FROM message WHERE json_extract(data, '$.role') = 'assistant' ORDER BY time_created`
+      ], { encoding: 'utf8', timeout: 30000, windowsHide: true }).trim();
+      if (batchRows) {
+        for (const row of batchRows.split('\n')) {
+          const sepIdx = row.indexOf('|');
+          if (sepIdx < 0) continue;
+          const sessId = row.slice(0, sepIdx);
+          const jsonStr = row.slice(sepIdx + 1);
+          try {
+            const msgData = JSON.parse(jsonStr);
+            const t = msgData.tokens || {};
+            const inp = t.input || 0;
+            const out = (t.output || 0) + (t.reasoning || 0);
+            const cacheRead = (t.cache && t.cache.read) || 0;
+            const cacheCreate = (t.cache && t.cache.write) || 0;
+            if (inp === 0 && out === 0) continue;
+            if (!kiloCostCache[sessId]) kiloCostCache[sessId] = { cost: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreateTokens: 0, contextPctSum: 0, contextTurnCount: 0, model: '' };
+            const c = kiloCostCache[sessId];
+            if (!c.model && msgData.modelID) c.model = msgData.modelID;
+            const pricing = getModelPricing(msgData.modelID || c.model);
+            c.inputTokens += inp;
+            c.outputTokens += out;
+            c.cacheReadTokens += cacheRead;
+            c.cacheCreateTokens += cacheCreate;
+            c.cost += inp * pricing.input + cacheCreate * pricing.cache_create + cacheRead * pricing.cache_read + out * pricing.output;
+            const ctx = inp + cacheCreate + cacheRead;
+            if (ctx > 0) { c.contextPctSum += (ctx / CONTEXT_WINDOW) * 100; c.contextTurnCount++; }
+          } catch {}
+        }
+      }
+    } catch {}
+  }
+
   for (const s of sessions) {
     let costData;
     if (s.tool === 'opencode' && opencodeCostCache[s.id]) {
       costData = opencodeCostCache[s.id];
+    } else if (s.tool === 'kilo' && kiloCostCache[s.id]) {
+      costData = kiloCostCache[s.id];
     } else if (s.tool === 'cursor') {
       // Use real token data from Cursor vscdb if available
       const inp = s._cursor_input_tokens || 0;
@@ -2923,13 +4692,15 @@ function _computeCostAnalytics(sessions) {
 
     // Per-agent breakdown
     const agent = s.tool || 'unknown';
-    if (!byAgent[agent]) byAgent[agent] = { cost: 0, sessions: 0, tokens: 0, estimated: false };
+    if (!byAgent[agent]) byAgent[agent] = { cost: 0, sessions: 0, tokens: 0, estimated: false, unavailable: false };
     byAgent[agent].cost += cost;
     byAgent[agent].sessions++;
     byAgent[agent].tokens += tokens;
-    if (agent === 'codex') byAgent[agent].estimated = true;
+    if (agent === 'codex' || costData.estimated) byAgent[agent].estimated = true;
     if (agent === 'cursor' && costData.model && costData.model.includes('-estimated')) byAgent[agent].estimated = true;
+    if (costData.unavailable) byAgent[agent].unavailable = true;
     if (agent === 'opencode' && !costData.model) byAgent[agent].estimated = true;
+    if (agent === 'kilo' && !costData.model) byAgent[agent].estimated = true;
 
     // Context % across all turns
     globalContextPctSum += costData.contextPctSum;
@@ -2987,6 +4758,19 @@ function _computeCostAnalytics(sessions) {
 
   _saveCostDiskCache();
 
+  // Cost breakdown by token type (approximated using Sonnet pricing as baseline).
+  // Not perfectly accurate for mixed-model usage, but directionally correct for attribution.
+  const p = MODEL_PRICING['claude-sonnet-4-6'];
+  const inputCostEst    = totalInputTokens      * p.input;
+  const outputCostEst   = totalOutputTokens     * p.output;
+  const cacheReadCostEst  = totalCacheReadTokens  * p.cache_read;
+  const cacheCreateCostEst = totalCacheCreateTokens * p.cache_create;
+  // Cache savings: what cache-read tokens would have cost at full input price
+  const cacheSavings = totalCacheReadTokens * (p.input - p.cache_read);
+  const totalInputSide = totalInputTokens + totalCacheReadTokens + totalCacheCreateTokens;
+  const cacheHitRate = totalInputSide > 0
+    ? Math.round(totalCacheReadTokens / totalInputSide * 100) : 0;
+
   return {
     totalCost,
     totalTokens,
@@ -3010,10 +4794,72 @@ function _computeCostAnalytics(sessions) {
     last1hCost,
     todayCost,
     hoursElapsedToday: Math.max(1, hoursElapsedToday),
+    inputCostEst,
+    outputCostEst,
+    cacheReadCostEst,
+    cacheCreateCostEst,
+    cacheSavings,
+    cacheHitRate,
   };
 }
 
 // ── Active sessions detection ─────────────────────────────
+
+function extractSessionIdFromCommand(cmd, tool) {
+  if (!cmd || !tool) return '';
+
+  const patternsByTool = {
+    qwen: [/(?:^|\s)(?:-r|--resume)\s+([0-9a-f-]{36})(?:\s|$)/i, /(?:^|\s)--session-id\s+([0-9a-f-]{36})(?:\s|$)/i],
+    codex: [/(?:^|\s)resume\s+([0-9a-f-]{36})(?:\s|$)/i],
+    claude: [/(?:^|\s)--resume\s+([0-9a-f-]{36})(?:\s|$)/i],
+  };
+
+  const patterns = patternsByTool[tool] || [];
+  for (const pattern of patterns) {
+    const match = cmd.match(pattern);
+    if (match) return match[1];
+  }
+
+  return '';
+}
+
+function findQwenSessionByPid(pid, cwd, allSessions) {
+  const byOpenFile = [];
+  const byCwd = [];
+
+  try {
+    const lsofOut = execSync(`lsof -a -p ${pid} -Fn 2>/dev/null`, {
+      encoding: 'utf8',
+      timeout: 2000,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    for (const line of lsofOut.split('\n')) {
+      const match = line.match(/(\/.*\.qwen\/projects\/.*\/(?:chats|sessions)\/([0-9a-f-]{36})\.jsonl)$/i);
+      if (!match) continue;
+      const sessionId = match[2];
+      const session = allSessions.find(s => s.id === sessionId);
+      if (session) byOpenFile.push(session);
+    }
+  } catch {}
+
+  if (cwd) {
+    for (const session of allSessions) {
+      if (session.tool === 'qwen' && session.project === cwd) byCwd.push(session);
+    }
+  }
+
+  if (byOpenFile.length > 0) {
+    byOpenFile.sort((a, b) => b.last_ts - a.last_ts);
+    return { session: byOpenFile[0], source: 'qwen-open-file' };
+  }
+
+  if (byCwd.length > 0) {
+    byCwd.sort((a, b) => b.last_ts - a.last_ts);
+    return { session: byCwd[0], source: 'cwd-match' };
+  }
+
+  return null;
+}
 
 function getActiveSessions() {
   const active = [];
@@ -3036,9 +4882,11 @@ function getActiveSessions() {
   const agentPatterns = [
     { pattern: 'claude', tool: 'claude', match: /\/claude\s|^claude\s|\bclaude\b/ },
     { pattern: 'codex', tool: 'codex', match: /\/codex\s|^codex\s|codex app-server|\bcodex\b/ },
+    { pattern: 'qwen', tool: 'qwen', match: /(?:^|[\/\s])qwen(?:\s|$)/ },
     { pattern: 'opencode', tool: 'opencode', match: /\/opencode\s|^opencode\s|\bopencode\b/ },
     { pattern: 'kiro', tool: 'kiro', match: /kiro-cli/ },
     { pattern: 'cursor-agent', tool: 'cursor', match: /cursor-agent/ },
+    { pattern: 'kilo', tool: 'kilo', match: /@kilocode\/cli|\/bin\/kilo\s|^kilo\s/ },
   ];
 
   // Skip process scanning on Windows (no ps/grep)
@@ -3046,9 +4894,11 @@ function getActiveSessions() {
 
   try {
     const psOut = execSync(
-      'ps aux 2>/dev/null | grep -E "claude|codex|opencode|kiro-cli|cursor-agent" | grep -v grep || true',
+      'ps aux 2>/dev/null | grep -E "claude|codex|qwen|opencode|kiro-cli|cursor-agent|kilo" | grep -v grep || true',
       { encoding: 'utf8', timeout: 3000, stdio: ['pipe', 'pipe', 'pipe'] }
     );
+
+    const allSessions = loadSessions();
 
     for (const line of psOut.split('\n').filter(Boolean)) {
       const parts = line.trim().split(/\s+/);
@@ -3070,11 +4920,14 @@ function getActiveSessions() {
       if (!tool) continue;
 
       // Skip node/npm/shell wrappers, MCP servers, plugins — only main agent processes
-      if (cmd.includes('node bin/cli') || cmd.includes('npm') || cmd.includes('grep')) continue;
+      if (cmd.includes('node bin/cli') || /(^|\s)npm(\s|$)/.test(cmd) || /(^|\s)grep(\s|$)/.test(cmd)) continue;
       if (cmd.includes('mcp-server') || cmd.includes('mcp_server') || cmd.includes('/mcp/') || cmd.includes('/mcp-servers/')) continue;
       if (cmd.includes('/plugins/') || cmd.includes('plugin-') || cmd.includes('app-server-broker')) continue;
       if (cmd.includes('.claude/') && !cmd.includes('claude ') && tool === 'claude') continue;
       if (cmd.includes('.codex/') && !cmd.includes('codex ') && tool === 'codex') continue;
+      if (cmd.includes('.kilo/') && !cmd.includes('kilo ') && tool === 'kilo') continue;
+      if (cmd.includes('.local/share/kilo/') && tool === 'kilo') continue;
+      if (cmd.includes('sqlite3') && tool === 'kilo') continue;
 
       seenPids.add(pid);
 
@@ -3083,6 +4936,11 @@ function getActiveSessions() {
       let cwd = '';
       let startedAt = 0;
       let sessionSource = '';
+      const explicitSessionId = extractSessionIdFromCommand(cmd, tool);
+      if (explicitSessionId) {
+        sessionId = explicitSessionId;
+        sessionSource = 'cmd-arg';
+      }
       if (claudePidMap[pid]) {
         sessionId = claudePidMap[pid].sessionId || '';
         cwd = claudePidMap[pid].cwd || '';
@@ -3093,7 +4951,7 @@ function getActiveSessions() {
       // Try to get cwd from lsof if not from PID file
       if (!cwd) {
         try {
-          const lsofOut = execSync(`lsof -d cwd -p ${pid} -Fn 2>/dev/null`, { encoding: 'utf8', timeout: 2000, stdio: ['pipe', 'pipe', 'pipe'] });
+          const lsofOut = execSync(`lsof -a -p ${pid} -d cwd -Fn 2>/dev/null`, { encoding: 'utf8', timeout: 2000, stdio: ['pipe', 'pipe', 'pipe'] });
           const match = lsofOut.match(/\nn(\/[^\n]+)/);
           if (match) cwd = match[1];
         } catch {}
@@ -3101,15 +4959,23 @@ function getActiveSessions() {
 
       // Try to find session ID by matching cwd + tool to loaded sessions
       if (!sessionId) {
-        const allS = loadSessions();
-        const match = allS.find(s => s.tool === tool && s.project === cwd);
+        let match = null;
+        if (tool === 'qwen') {
+          const qwenMatch = findQwenSessionByPid(pid, cwd, allSessions);
+          if (qwenMatch) {
+            match = qwenMatch.session;
+            sessionSource = qwenMatch.source;
+          }
+        } else {
+          match = allSessions.find(s => s.tool === tool && s.project === cwd);
+          if (match) sessionSource = 'cwd-match';
+        }
         if (match) {
           sessionId = match.id;
-          sessionSource = 'cwd-match';
         }
         // If still no match, find latest session of this tool
         if (!sessionId) {
-          const latest = allS.filter(s => s.tool === tool).sort((a,b) => b.last_ts - a.last_ts)[0];
+          const latest = allSessions.filter(s => s.tool === tool).sort((a,b) => b.last_ts - a.last_ts)[0];
           if (latest) {
             sessionId = latest.id;
             sessionSource = 'fallback-latest';
@@ -3134,7 +5000,29 @@ function getActiveSessions() {
     }
   } catch {}
 
-  return active;
+  // Collapse wrapper/child duplicates into one visible live session.
+  const deduped = new Map();
+  for (const entry of active) {
+    const key = entry.sessionId ? `${entry.kind}:${entry.sessionId}` : `pid:${entry.pid}`;
+    const existing = deduped.get(key);
+    if (!existing) {
+      deduped.set(key, entry);
+      continue;
+    }
+
+    const existingScore =
+      (existing.sessionId ? 100 : 0) +
+      (existing.status === 'active' ? 10 : 0) +
+      Math.min(9, Math.round(existing.cpu));
+    const entryScore =
+      (entry.sessionId ? 100 : 0) +
+      (entry.status === 'active' ? 10 : 0) +
+      Math.min(9, Math.round(entry.cpu));
+
+    if (entryScore > existingScore) deduped.set(key, entry);
+  }
+
+  return Array.from(deduped.values());
 }
 
 // ── Leaderboard stats ─────────────────────────────────────
@@ -3190,7 +5078,32 @@ function _saveDailyStatsDiskCache() {
 function _computeSessionDailyBreakdown(s, found) {
   const msgsByDay = {};
   const tsByDay = {};
+
+  const addMsg = (day, ts) => {
+    msgsByDay[day] = (msgsByDay[day] || 0) + 1;
+    if (!tsByDay[day]) tsByDay[day] = { first: ts, last: ts };
+    if (ts < tsByDay[day].first) tsByDay[day].first = ts;
+    if (ts > tsByDay[day].last) tsByDay[day].last = ts;
+  };
+
   try {
+    // Copilot: use optimized parser instead of line-by-line generic JSONL scan
+    if (found.format === 'copilot-chat') {
+      let data;
+      if (found.file.endsWith('.jsonl')) {
+        data = parseCopilotJsonl(found.file);
+      } else {
+        data = parseCopilotJson(found.file);
+      }
+      for (const req of (data.requests || [])) {
+        if (!req.message || !req.message.text || !req.message.text.trim()) continue;
+        const ts = req.timestamp || data.creationDate || s.first_ts;
+        const day = ts ? fmtLocalDay(ts) : (s.date || fmtLocalDay(s.last_ts));
+        addMsg(day, ts || s.first_ts);
+      }
+      return { msgsByDay, tsByDay };
+    }
+
     const lines = readLines(found.file);
     for (const line of lines) {
       try {
@@ -3206,6 +5119,11 @@ function _computeSessionDailyBreakdown(s, found) {
           const c = entry.message && entry.message.content;
           if (typeof c === 'string' && c.trim()) hasText = true;
           else if (Array.isArray(c)) { for (const p of c) { if (p.type === 'text' && p.text && p.text.trim()) { hasText = true; break; } } }
+        } else if (found.format === 'qwen') {
+          if (entry.type !== 'user') continue;
+          isUser = true;
+          if (entry.timestamp) ts = parseTimestamp(entry.timestamp);
+          hasText = !!extractQwenText((((entry.message || {}).parts)));
         } else if (found.format === 'cursor') {
           if (entry.role !== 'user') continue;
           isUser = true;
@@ -3225,10 +5143,7 @@ function _computeSessionDailyBreakdown(s, found) {
         if (!isUser || !hasText) continue;
         if (!ts || ts < 1000000000000) ts = s.first_ts;
         const day = (found.format === 'claude' && ts) ? fmtLocalDay(ts) : (s.date || fmtLocalDay(s.last_ts));
-        msgsByDay[day] = (msgsByDay[day] || 0) + 1;
-        if (!tsByDay[day]) tsByDay[day] = { first: ts, last: ts };
-        if (ts < tsByDay[day].first) tsByDay[day].first = ts;
-        if (ts > tsByDay[day].last) tsByDay[day].last = ts;
+        addMsg(day, ts || s.first_ts);
       } catch {}
     }
   } catch {}
@@ -3284,7 +5199,7 @@ function _computeDailyStats(sessions) {
 
     // For sessions with detail files — read actual message timestamps
     const found = s.has_detail ? findSessionFile(s.id, s.project) : null;
-    if (found && found.format !== 'opencode' && found.format !== 'kiro' && found.format !== 'cursor' && fs.existsSync(found.file)) {
+    if (found && found.format !== 'opencode' && found.format !== 'kiro' && found.format !== 'kilo' && found.format !== 'cursor' && fs.existsSync(found.file)) {
       // Check disk cache for daily breakdown
       let breakdown;
       let dailyCacheKey = '';
@@ -3423,10 +5338,28 @@ module.exports = {
   loadCopilotDetail,
   CLAUDE_DIR,
   CODEX_DIR,
+  QWEN_DIR,
   OPENCODE_DB,
-  KIRO_DB,
+KIRO_DB,
   COPILOT_SESSION_DIR,
   COPILOT_JB_DIR,
+  KILO_DB,
   HISTORY_FILE,
   PROJECTS_DIR,
+  __test: {
+    parseWslDistroList,
+    getWslDistroList,
+    getRunningWslDistroSet,
+    filterWslDistrosForProcessScan,
+    buildWslUncPath,
+    normalizeProjectPath,
+    shortenHomePath,
+    detectWindowsWslHomes,
+    parseStructuredWrapper,
+    parseStructuredFields,
+    parseClaudeTaskNotification,
+    parseClaudeStructuredMessage,
+    parseStructuredMessage,
+    isFilteredClaudeStructuredMessage,
+  },
 };
