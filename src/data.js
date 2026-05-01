@@ -1171,7 +1171,7 @@ function parseWorkspaceYaml(text) {
   return result;
 }
 
-function scanCopilotSessions() {
+function scanCopilotCliSessions() {
   const sessions = [];
   const homedir = ALL_HOMES[0];
 
@@ -1295,7 +1295,7 @@ function scanCopilotSessions() {
   return sessions;
 }
 
-function loadCopilotDetail(sessionId) {
+function loadCopilotCliDetail(sessionId) {
   // Try VS Code session dir first
   let eventsPath = path.join(COPILOT_SESSION_DIR, sessionId, 'events.jsonl');
   if (!fs.existsSync(eventsPath)) {
@@ -2740,15 +2740,15 @@ function loadSessions() {
     for (const ks of kiroSessions) {
       sessions[ks.id] = ks;
     }
-  } catch {}
+} catch {}
 
 // Load Copilot CLI sessions
   try {
-    const copilotSessions = scanCopilotSessions();
+    const copilotSessions = scanCopilotCliSessions();
     for (const cs of copilotSessions) sessions[cs.id] = cs;
   } catch {}
 
-  // Load Kilo CLI sessions
+// Load Kilo CLI sessions
   try {
     const kiloSessions = scanKiloCliSessions();
     for (const ks of kiloSessions) {
@@ -2756,16 +2756,15 @@ function loadSessions() {
     }
   } catch {}
 
-  // Load Copilot Chat sessions
+// Load Copilot Chat sessions
   try {
     const copilotSessions = scanCopilotSessions();
     for (const cs of copilotSessions) {
       sessions[cs.id] = cs;
     }
   } catch {}
-  } catch {}
 
-  // WSL: also load from Windows-side dirs
+// WSL: also load from Windows-side dirs
   for (const extraClaudeDir of EXTRA_CLAUDE_DIRS) {
     try {
       const extraHistory = path.join(extraClaudeDir, 'history.jsonl');
@@ -3002,12 +3001,6 @@ function loadSessionDetail(sessionId, project) {
 
   // Copilot Chat (JSON/JSONL)
   if (found.format === 'copilot-chat') {
-    return loadCopilotDetail(sessionId);
-  }
-
-  // Copilot Chat (JSON/JSONL)
-  if (found.format === 'copilot-chat') {
->>>>>>> main
     return loadCopilotDetail(sessionId);
   }
 
@@ -3508,28 +3501,32 @@ function findSessionFile(sessionId, project) {
       if (parseInt(check) > 0) {
         return { file: KIRO_DB, format: 'kiro', sessionId: sessionId };
       }
-    } catch {}
+} catch {}
   }
 
-// Load Copilot CLI sessions
-  try {
-    const copilotSessions = scanCopilotSessions();
-    for (const cs of copilotSessions) sessions[cs.id] = cs;
-  } catch {}
+  // Try Copilot CLI (VS Code session dir)
+  const copilotEventsPath = path.join(COPILOT_SESSION_DIR, sessionId, 'events.jsonl');
+  if (fs.existsSync(copilotEventsPath)) {
+    return { file: copilotEventsPath, format: 'copilot', sessionId: sessionId };
+  }
 
-  // Load Kilo CLI sessions
+  // Try Copilot CLI (JetBrains)
   try {
-    const kiloSessions = scanKiloCliSessions();
-    for (const ks of kiloSessions) {
-      sessions[ks.id] = ks;
-    }
-  } catch {}
-
-  // Load Copilot Chat sessions
-  try {
-    const copilotSessions = scanCopilotSessions();
-    for (const cs of copilotSessions) {
-      sessions[cs.id] = cs;
+    const jbUuids = fs.readdirSync(COPILOT_JB_DIR);
+    for (const uuid of jbUuids) {
+      const p = path.join(COPILOT_JB_DIR, uuid, 'partition-1.jsonl');
+      if (fs.existsSync(p)) {
+        const text = fs.readFileSync(p, 'utf8');
+        for (const line of text.split('\n')) {
+          if (!line.trim()) continue;
+          try {
+            const ev = JSON.parse(line);
+            if (ev.type === 'partition.created' && ev.data && ev.data.conversationId === sessionId) {
+              return { file: p, format: 'copilot', sessionId: sessionId };
+            }
+          } catch {}
+        }
+      }
     }
   } catch {}
 
@@ -5340,7 +5337,7 @@ module.exports = {
   CODEX_DIR,
   QWEN_DIR,
   OPENCODE_DB,
-KIRO_DB,
+  KIRO_DB,
   COPILOT_SESSION_DIR,
   COPILOT_JB_DIR,
   KILO_DB,

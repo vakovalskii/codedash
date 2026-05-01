@@ -201,11 +201,6 @@ function startServer(host, port, openBrowser = true) {
             target = require('path').dirname(target);
           }
           log('IDE', `ide=${ide} project=${project} target=${target}`);
-if (ide === 'cursor') {
-            exec(`cursor "${target || '.'}"`);
-          } else if (ide === 'code' || ide === 'vscode') {
-            exec(`code "${target || '.'}"`);
-          }
           openIDE(ide, target || '.');
           json(res, { ok: true });
         } catch (e) {
